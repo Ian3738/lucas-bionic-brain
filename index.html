@@ -94,6 +94,8 @@
   .stagerow input[type=range]{flex:1;min-width:180px;max-width:420px;accent-color:var(--accent);height:22px}
   .stagename{font-size:13px;font-weight:650;min-width:5.5em}
   .stagedesc{font-size:11.5px;color:var(--muted);line-height:1.6;margin:-4px 0 10px 64px}
+  /* 單線以外的模式不看這三顆，淡掉但不藏起來，免得版面跳動 */
+  #pathRow.dim{opacity:.34;pointer-events:none}
   @media (max-width:560px){ .lab{min-width:100%} .stagedesc{margin-left:0} }
 
   /* ── 對話面板 ──────────────────────────────────────────── */
@@ -179,6 +181,12 @@
     </div>
     <p class="stagedesc" id="stageDesc"></p>
     <div class="row">
+      <span class="lab">訊號</span>
+      <button data-mode="chain" aria-pressed="true">單線</button>
+      <button data-mode="race" aria-pressed="false">情緒 vs 思考 賽跑</button>
+      <button data-mode="parallel" aria-pressed="false">全並行</button>
+    </div>
+    <div class="row" id="pathRow">
       <span class="lab">這一場</span>
       <button data-path="done" aria-pressed="true">整合輸出 done</button>
       <button data-path="loop" aria-pressed="false">原地繞圈 returnLimit</button>
@@ -207,6 +215,11 @@
       否則會變成「生日一過就換了顆腦」。<br>
       <b>訊號仍然會走到灰掉的腦區</b> —— 那是刻意的：它跑去問前額葉，而那裡還沒有東西。<br>
       <b>走過的連線會留下餘溫。</b>切到「原地繞圈」看那兩條線怎麼愈燒愈亮 —— 那是乒乓球退化，現在看得見了。<br>
+      <b>三種訊號模式。</b>「單線」是一次走一條鏈，看得出它卡在哪裡；
+      「賽跑」讓情緒與思考<b>同時出發</b> —— 杏仁核走一跳就到前額葉，海馬迴要先經過查核守衛才到，
+      階段愈低情緒贏愈多，到專家才追得上；「全並行」則是成熟幾個腦區就有幾條線同時在跑。<br>
+      <b>右上角的「此刻」是真的，不是動畫。</b>它在聽你講話、在想、在講的時候，
+      亮起來的腦區跟著換。⚠ 哪個動作對應哪個腦區是教學用的對應，不是解剖主張。<br>
       <b>跟它說話的時候，訊號走哪一條是它自己決定的。</b>問新生兒，線會接錯；問學齡前，它在原地繞圈；
       要到青年以後，訊號才走得完整合輸出那一圈。這條規則沒有寫死給哪個問題，是綁在階段上的。
     </p>
@@ -395,11 +408,91 @@
   let showShell = true, showNet = true, spin = true;
   let yaw = -0.55, pitch = -0.18, dragging = false, lastX = 0, lastY = 0;
   const heat = {};                 // 每條線的餘溫
-  let runT = 0, hopIdx = 0, finished = false;
   const HOP_SEC = 1.15;
   let speaking = false;            // Lucas 正在講話 → 腦區呼吸加快
 
-  function replay(){ runT = 0; hopIdx = 0; finished = false; for (const k in heat) heat[k] = 0; }
+  /* ── 訊號 ────────────────────────────────────────────────
+     一個訊號就是沿著一串邊移動的光點。以前只有一個、一次走一條邊，
+     所以整顆腦看起來是嚴格單線的 —— 真實的腦不是這樣，五個區同時在活動。
+     現在改成一組訊號並行跑，三種模式決定這一組裡有誰。            */
+  const MODES = { chain:"單線", race:"賽跑", parallel:"全並行" };
+  let mode = "chain";
+  let signals = [], raceResult = "";
+
+  function mkSignal(path, opt){
+    const hops = [];
+    for (let i=0;i<path.length-1;i++) hops.push([path[i], path[i+1]]);
+    return Object.assign({ hops, i:0, u:0, speed:1, delay:0, loop:false,
+                           tint:[255,255,255], done:false, label:"" }, opt||{});
+  }
+
+  /**
+   * 情緒走快通關：杏仁核一跳就到前額葉。這條的速度**不隨階段改變** ——
+   * 皮質下的快通關本來就是先天就在的，不是後天長出來的。
+   *
+   * 思考走慢通關：海馬迴要先經過查核守衛才到前額葉，兩跳。
+   * 會隨階段變快的是**這一條** —— 髓鞘化、前額葉成熟、後設監控上線，
+   * 講的都是這條路變快。所以「長大」在畫面上就是綠色那條愈追愈緊。
+   *
+   * ⚠ 情緒永遠先到，這是對的：重點不是思考後來居上，而是它到得夠早，
+   *   早到還來得及在行動之前介入。專家階段的差距只剩不到一秒。
+   */
+  const EMO_SPEED = 2.2;
+  const THINK_SPEED = [0.30, 0.34, 0.40, 0.50, 0.62, 0.85, 1.15, 1.50];
+  const raceArrive = i => ({
+    emo:   1 / EMO_SPEED * HOP_SEC,          // 一跳
+    think: 2 / THINK_SPEED[i] * HOP_SEC,     // 兩跳
+  });
+
+  function buildSignals(){
+    raceResult = "";
+    const ST = STAGES[stageIx];
+    const taught = MATURE_ORDER.slice(0, ST.lit);
+    if (mode === "chain"){
+      signals = [ mkSignal(PATHS[pathKey], { speed:1, tint:[255,255,255] }) ];
+    } else if (mode === "race"){
+      signals = [
+        mkSignal(["amygdala","pfc"],               { speed:EMO_SPEED,          tint:R.amygdala.c, label:"情緒" }),
+        mkSignal(["hippocampus","verifier","pfc"], { speed:THINK_SPEED[stageIx], tint:R.verifier.c, label:"思考" }),
+      ];
+    } else {
+      /* 並行度綁在成熟度上：成熟幾個腦區，就有幾條線同時在跑。
+         這正是「長大」在功能上的意思 —— 能同時握住的事情變多了。 */
+      const LOOPS = [
+        ["amygdala","hippocampus","amygdala"],                 // 情緒與記憶互相拉扯
+        ["hippocampus","verifier","hippocampus"],              // 回憶送去查核
+        ["dmn","hippocampus","dmn"],                           // 自由聯想
+        ["pfc","dmn","pfc"],                                   // 規劃時調用聯想
+        ["pfc","verifier","pfc"],                              // 後設監控，持續跑
+      ];
+      /* 只留下「所有腦區都已經成熟」的迴路 —— 沒教過的地方跑不起來。
+         所以線數不是寫死的，是成熟度自然長出來的結果。 */
+      const usable = LOOPS.filter(lp => lp.every(id => taught.includes(id)));
+      signals = usable.slice(0, Math.max(1, ST.lit)).map((lp, i) => mkSignal(lp, {
+        speed: 0.7 + i*0.18, delay: i*0.45, loop:true, tint: R[lp[0]].c
+      }));
+      if (!signals.length){
+        // 新生兒只有杏仁核，連一條完整迴路都湊不出來 —— 那就讓它伸向還沒有東西的地方
+        signals = [ mkSignal(["amygdala","hippocampus","amygdala"],
+                             { speed:0.7, loop:true, tint:R.amygdala.c }) ];
+      }
+    }
+  }
+
+  function replay(){ for (const k in heat) heat[k] = 0; buildSignals(); }
+
+  /* ── 腦區的即時活躍度 ──────────────────────────────────
+     這一層跟上面的訊號無關，是真的在報告 Lucas 此刻在做什麼：
+     聽你講話、在想、在講。⚠ 哪個動作對應哪個腦區是教學用的對應，不是解剖主張。 */
+  const excite = {};
+  for (const id of IDS) excite[id] = 0;
+  const ACTIVITY = {
+    idle:      [],
+    listening: [["hippocampus",1], ["amygdala",0.45]],   // 把聽到的東西收進來
+    thinking:  [["pfc",1], ["dmn",0.7]],                 // 前額葉在想，預設模式網絡在聯想
+    speaking:  [["pfc",0.8], ["verifier",1]],            // 一邊講一邊查核自己
+  };
+  let activity = "idle";
 
   // ── 投影 ──────────────────────────────────────────────────
   let W=900, H=520, DPR=1, SC=1;
@@ -441,19 +534,35 @@
     const el = now/1000;
     if (spin && !dragging) yaw += 0.30*dt;
 
-    // 走鏈
-    const PATH = PATHS[pathKey];
-    if (!finished){
-      runT += dt;
-      const idx = Math.floor(runT/HOP_SEC);
-      if (idx >= PATH.length-1){ finished = true; hopIdx = PATH.length-2; }
-      else hopIdx = idx;
+    // 走訊號。每個訊號各自前進，所以同一時間可以有好幾條邊是熱的。
+    const hot = new Set();
+    for (const sg of signals){
+      if (sg.delay > 0){ sg.delay -= dt; continue; }
+      if (sg.done) { hot.add(ekey(sg.hops[sg.hops.length-1][0], sg.hops[sg.hops.length-1][1])); continue; }
+      sg.u += dt * sg.speed / HOP_SEC;
+      while (sg.u >= 1){
+        sg.u -= 1; sg.i++;
+        if (sg.i >= sg.hops.length){
+          if (sg.loop){ sg.i = 0; }
+          else {
+            sg.i = sg.hops.length - 1; sg.u = 1; sg.done = true;
+            // 賽跑模式：先抵達前額葉的那條，記下來
+            if (mode === "race" && !raceResult && sg.label) raceResult = sg.label;
+            break;
+          }
+        }
+      }
+      const h = sg.hops[sg.i];
+      if (h) hot.add(ekey(h[0], h[1]));
     }
-    const frac = finished ? 1 : (runT % HOP_SEC)/HOP_SEC;
-    const from = PATH[hopIdx], to = PATH[hopIdx+1];
-    const activeKey = ekey(from,to);
-    heat[activeKey] = 1;
-    for (const k in heat) if (k !== activeKey) heat[k] = Math.max(0, heat[k] - 0.16*dt);
+    for (const k of hot) heat[k] = 1;
+    for (const k in heat) if (!hot.has(k)) heat[k] = Math.max(0, heat[k] - 0.16*dt);
+
+    // 活躍度平滑逼近，避免狀態一換就跳
+    const want = {}; for (const id of IDS) want[id] = 0;
+    for (const [id, v] of (ACTIVITY[activity] || [])) want[id] = v;
+    const ek = 1 - Math.pow(0.05, dt);
+    for (const id of IDS) excite[id] += (want[id] - excite[id]) * ek;
 
     ctx.fillStyle = "#05070d"; ctx.fillRect(0,0,W,H);
 
@@ -493,26 +602,45 @@
         ctx.lineWidth = 0.7 + h*1.9;
         ctx.stroke();
 
-        // 沿線流動的粒子：背景微光 + 現行那條的亮流
-        const cnt = k===activeKey ? 16 : 4;
-        for (let i=0;i<cnt;i++){
-          const u = k===activeKey
-            ? Math.max(0, Math.min(1, frac - i*0.030))
-            : ((el*0.11 + i/cnt) % 1);
-          if (u<=0 || u>=1) continue;
+        // 背景微光：整個網絡一直有低度活動，不是只有現行那條才活著
+        for (let i=0;i<4;i++){
+          const u = ((el*0.11 + i/4) % 1);
           const [x,y,z] = bez(A,M,B,u);
-          const [px,py,,s] = project(x,y,z);
-          ctx.beginPath(); ctx.arc(px,py, (k===activeKey?1.7:1.0)*s+0.5, 0, 6.2832);
-          ctx.fillStyle = k===activeKey
-            ? `rgba(255,255,255,${0.75*(1-i/cnt)})`
-            : `rgba(${mix.join(",")},0.30)`;
+          const [px,py,,sc] = project(x,y,z);
+          ctx.beginPath(); ctx.arc(px,py, 1.0*sc+0.5, 0, 6.2832);
+          ctx.fillStyle = `rgba(${mix.join(",")},0.30)`;
+          ctx.fill();
+        }
+      }
+
+      // 訊號本身：一顆亮頭加一條拖尾，各自帶自己的顏色（賽跑時分得出誰是誰）
+      for (const sg of signals){
+        if (sg.delay > 0) continue;
+        const h = sg.hops[sg.i]; if (!h) continue;
+        const A = R[h[0]].p, B = R[h[1]].p, M = ctrl(h[0], h[1]);
+        const [tr,tg,tb] = sg.tint;
+        for (let i=0;i<14;i++){
+          const u = Math.max(0, Math.min(1, sg.u - i*0.028));
+          if (u <= 0) continue;
+          const [x,y,z] = bez(A,M,B,u);
+          const [px,py,,sc] = project(x,y,z);
+          ctx.beginPath(); ctx.arc(px,py, (i===0?2.1:1.6)*sc+0.4, 0, 6.2832);
+          ctx.fillStyle = i===0
+            ? `rgba(255,255,255,0.92)`
+            : `rgba(${tr},${tg},${tb},${0.72*(1-i/14)})`;
           ctx.fill();
         }
       }
     }
 
     // ── 五個腦區 ──────────────────────────────────────────
-    const visited = new Set(PATH.slice(0, hopIdx+2));
+    /* 有出場 = 任何一個訊號走過或正要走到。多訊號並行時這是聯集。 */
+    const visited = new Set();
+    for (const sg of signals){
+      for (let i=0;i<=Math.min(sg.i, sg.hops.length-1);i++){
+        visited.add(sg.hops[i][0]); visited.add(sg.hops[i][1]);
+      }
+    }
     const ST = STAGES[stageIx];
     // 指數逼近：每秒收斂約 92%，拖動時看得到收攏的過程
     const k = 1 - Math.pow(0.08, dt);
@@ -527,8 +655,14 @@
     const taught = new Set(MATURE_ORDER.slice(0, ST.lit));
     for (const id of IDS){
       const reg = R[id], [cr,cg,cb] = reg.c;
-      const isActive = (id===to && !finished) || (finished && id===PATH[PATH.length-1]);
-      const unused = !visited.has(id) || !taught.has(id);
+      // 正被某個訊號抵達，或正因為真實活動而活躍
+      let isActive = excite[id] > 0.45;
+      for (const sg of signals){
+        const h = sg.hops[sg.i];
+        if (!h || sg.delay > 0) continue;
+        if (h[1] === id && (sg.done || sg.u > 0.72)) isActive = true;
+      }
+      const unused = (!visited.has(id) && excite[id] < 0.2) || !taught.has(id);
       // Lucas 在講話時整顆腦呼吸得比較急，讓聲音和畫面是同一件事
       const beat = speaking ? 4.2 : 1.5, amp = speaking ? 0.11 : 0.06;
       const pulse = isActive ? 1 + 0.22*Math.sin(el*7) : 1 + amp*Math.sin(el*beat);
@@ -564,7 +698,7 @@
       // 核心光暈
       const [hx,hy,,hs] = project(reg.p[0],reg.p[1],reg.p[2]);
       if (!unused){
-        const rad = (isActive?34:20)*hs*pulse;
+        const rad = (isActive?34:20)*hs*pulse * (1 + excite[id]*0.55);
         const g = ctx.createRadialGradient(hx,hy,0,hx,hy,rad);
         g.addColorStop(0, `rgba(${cr},${cg},${cb},${isActive?0.75:0.45})`);
         g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
@@ -579,10 +713,33 @@
     }
 
     // 左上角的步驟說明
-    const trail = PATH.slice(0, hopIdx+2).map(id => R[id].abbr).join(" › ");
-    stepEl.innerHTML = finished
-      ? `${trail}<br>${STOPTXT[pathKey]}`
-      : `第 ${hopIdx+1} 步　<b>${R[to].zh}</b><br><span style="color:#94a3b8">${trail}</span>`;
+    const ACT_TXT = { idle:"", listening:"在聽你講", thinking:"在想", speaking:"在講" };
+    const actLine = ACT_TXT[activity]
+      ? `<br><span style="color:#fbbf24">● 此刻：${ACT_TXT[activity]}</span>` : "";
+    if (mode === "chain"){
+      const sg = signals[0];
+      const path = PATHS[pathKey];
+      const upto = sg ? Math.min(sg.i + 1, path.length - 1) : 0;
+      const trail = path.slice(0, upto + 1).map(id => R[id].abbr).join(" › ");
+      stepEl.innerHTML = (sg && sg.done)
+        ? `${trail}<br>${STOPTXT[pathKey]}${actLine}`
+        : `第 ${(sg?sg.i:0)+1} 步　<b>${R[path[upto]].zh}</b><br><span style="color:#94a3b8">${trail}</span>${actLine}`;
+    } else if (mode === "race"){
+      const a = raceArrive(stageIx), gap = a.think - a.emo;
+      const done = signals.filter(x => x.done).length;
+      const head = raceResult
+        ? `<b style="color:#ff5f7a">情緒</b> 先到前額葉`
+          + (done < signals.length
+              ? `　<span style="color:#94a3b8">思考還在路上</span>`
+              : `　<span style="color:#4ade80">思考也到了</span>`)
+        : `<span style="color:#ff5f7a">情緒</span> 與 <span style="color:#4ade80">思考</span> 同時出發…`;
+      stepEl.innerHTML = head
+        + `<br><span style="color:#94a3b8">情緒 ${a.emo.toFixed(1)}s · 思考 ${a.think.toFixed(1)}s · `
+        + `<b style="color:#e2e8f0">情緒早了 ${gap.toFixed(1)} 秒</b></span>${actLine}`;
+    } else {
+      stepEl.innerHTML = `<b>${signals.length}</b> 條線同時在跑`
+        + `<br><span style="color:#94a3b8">成熟 ${STAGES[stageIx].lit} / 5 個腦區</span>${actLine}`;
+    }
 
     requestAnimationFrame(draw);
   }
@@ -615,6 +772,8 @@
     nameEl.textContent = S.name;
     descEl.innerHTML =
       `${S.age}　·　接地率約 <b>${Math.round(S.ground*100)}%</b>　·　成熟 <b>${S.lit}</b> / 5 個腦區<br>${S.desc}`;
+    // 賽跑的速差與並行度都綁在階段上，換階段就要重組
+    if (mode !== "chain") buildSignals();
     document.dispatchEvent(new CustomEvent("stagechange", { detail:{ index:stageIx, stage:S } }));
   }
   slider.addEventListener("input", () => { stageIx = +slider.value; paintStage(); });
@@ -624,6 +783,11 @@
       o.setAttribute("aria-pressed", String(o.dataset.path===key)));
   }
   group("[data-path]",  b => { pathKey = b.dataset.path; replay(); });
+  group("[data-mode]",  b => {
+    mode = b.dataset.mode;
+    document.getElementById("pathRow").classList.toggle("dim", mode !== "chain");
+    replay();
+  });
 
   const toggle = (id, set) => {
     const el = document.getElementById(id);
@@ -643,6 +807,7 @@
 
   window.addEventListener("resize", resize);
   resize();
+  buildSignals();
   requestAnimationFrame(draw);
 
   /* 給第二部分用的窗口。腦不知道 Lucas 在講什麼，只知道要走哪條鏈、要不要喘。 */
@@ -660,6 +825,20 @@
       return pathKey;
     },
     setSpeaking(v){ speaking = !!v; },
+    /** 三種訊號模式：chain 單線 / race 情緒對思考賽跑 / parallel 全並行 */
+    setMode(m){
+      if (!MODES[m]) return;
+      mode = m;
+      document.querySelectorAll("[data-mode]").forEach(o =>
+        o.setAttribute("aria-pressed", String(o.dataset.mode === m)));
+      document.getElementById("pathRow").classList.toggle("dim", m !== "chain");
+      replay();
+    },
+    /**
+     * Lucas 此刻真的在做什麼：idle / listening / thinking / speaking。
+     * 對應到哪些腦區亮見 ACTIVITY —— ⚠ 那是教學用的對應，不是解剖主張。
+     */
+    setActivity(k){ activity = k in ACTIVITY ? k : "idle"; },
   };
 })();
 </script>
@@ -1031,6 +1210,7 @@
   function stopSpeak(){
     speakGen++;
     stopAsked = true;
+    window.BRAIN.setActivity("idle");
     stopNodes();
     if (chatAbort){ try { chatAbort.abort(); } catch(e){} chatAbort = null; }
     if (window.speechSynthesis) speechSynthesis.cancel();
@@ -1057,6 +1237,7 @@
     if (window.speechSynthesis) speechSynthesis.cancel();
     pauseRec();
     window.BRAIN.setSpeaking(true);
+    window.BRAIN.setActivity("speaking");
 
     try {
       await streamSpeak(speakable(text), P, gen);
@@ -1070,6 +1251,7 @@
          已經接手，這時候 resumeRec() 會在它正在講話的時候打開麥克風，它會聽見自己。 */
       if (gen === speakGen){
         window.BRAIN.setSpeaking(false);
+        window.BRAIN.setActivity("idle");
         resumeRec();
         // 倒數統一由 armAwake() 管，這裡不要自己續命 —— 舊版寫成
         // `if (micOn && awake)`，而 awake 在它講話中間就過期了，等於永遠不生效。
@@ -1126,6 +1308,7 @@
     cstat.textContent = "「" + S.name + "」的腦在想……";
     // 側邊面板預設是關的，回饋一定要放在畫布上，否則使用者看不到任何反應
     showBubble("（「" + S.name + "」的腦在想……）", 30000, "LUCAS");
+    window.BRAIN.setActivity("thinking");
     // 訊號實際走哪條鏈由階段決定 —— 低階段就是會接錯，畫面上看得到
     window.BRAIN.runOwnPath();
 
@@ -1161,6 +1344,7 @@
       showBubble("（" + err + "）", 5200);
     } finally {
       busy = false; showStop(false);
+      window.BRAIN.setActivity("idle");   // say() 的 finally 已設過，這裡涵蓋「還沒開口就失敗」
       armAwake();                    // 答完了 → 三十秒從「現在」重新起算
       cstat.textContent = err || "";
       setV(micOn ? (awake ? "awake" : "listening") : "off");
@@ -1422,6 +1606,7 @@
       }
       if (interim){
         cstat.textContent = "聽到：" + interim;
+        window.BRAIN.setActivity("listening");
         // 面板通常是關的，讓使用者在畫布上就看到自己講的話 —— 有回饋才不會覺得沒反應
         showBubble(interim, 2400, "你說");
         // 喚醒詞用即時結果就搶先反應，等 final 會慢半拍

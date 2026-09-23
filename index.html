@@ -1071,9 +1071,9 @@
       if (gen === speakGen){
         window.BRAIN.setSpeaking(false);
         resumeRec();
-        // 30 秒要從講完開始算。從聽到問題就開始算的話，後期階段光是唸完就過期了，
-        // 老師接著追問會被當成沒喚醒而無聲丟掉。
-        if (micOn && awake) setAwake(true);
+        // 倒數統一由 armAwake() 管，這裡不要自己續命 —— 舊版寫成
+        // `if (micOn && awake)`，而 awake 在它講話中間就過期了，等於永遠不生效。
+        armAwake();
       }
     }
   }
@@ -1113,6 +1113,7 @@
     }
     if (!hasKey()){ openKey(); return; }
     busy = true; lastAsk = userText; stopAsked = false; showStop(true);
+    armAwake();                      // 進入忙碌 → 把倒數停掉
 
     const i = window.BRAIN.index, S = window.BRAIN.STAGES[i], P = PERSONA[i];
     let err = "", aiNode = null;
@@ -1160,6 +1161,7 @@
       showBubble("（" + err + "）", 5200);
     } finally {
       busy = false; showStop(false);
+      armAwake();                    // 答完了 → 三十秒從「現在」重新起算
       cstat.textContent = err || "";
       setV(micOn ? (awake ? "awake" : "listening") : "off");
     }
@@ -1272,10 +1274,28 @@
     vdot.classList.add(state);
     vlabel.textContent = { listening:"LISTENING", awake:"AWAKE", thinking:"THINKING" }[state] || "";
   }
+  /**
+   * ⚠ 倒數只在「閒著等你講話」的時候跑。
+   *
+   * 之前是喚醒的當下就開始倒數，但它接下來要想兩秒、再唸三十幾秒 ——
+   * 專家階段的回答實測就是 35 秒的音訊。等它講完，視窗早就過期了，
+   * 使用者接著追問會走到 heard() 的 `if (!awake) return;` 被靜默丟掉，
+   * 症狀就是「回答完一次之後它再也聽不到我講話」。
+   *
+   * 所以 busy（思考中或發聲中）就不掛計時器，等 ask() 收尾時再重新起算。
+   */
+  function armAwake(){
+    clearTimeout(awakeT); awakeT = null;
+    if (awake && micOn && !busy){
+      awakeT = setTimeout(() => {
+        awake = false;
+        if (micOn){ setV("listening"); showBubble("（我睡了 —— 喊一聲「Lucas」叫醒我）", 3400, "LUCAS"); }
+      }, AWAKE_MS);
+    }
+  }
   function setAwake(on){
     awake = on;
-    clearTimeout(awakeT);
-    if (on) awakeT = setTimeout(() => { awake = false; if (micOn && !busy) setV("listening"); }, AWAKE_MS);
+    armAwake();
     if (micOn && !busy) setV(on ? "awake" : "listening");
   }
 
@@ -1346,7 +1366,15 @@
       }
       return;
     }
-    if (!awake) return;                 // 沒喚醒就只是背景雜音
+    if (!awake){
+      /* 之前這裡是直接 return，使用者完全不知道自己講的話被丟掉了。
+         太短的就當背景雜音，不然旁邊學生咳一聲都會跳提示。 */
+      if (t.length >= 3){
+        showBubble("（沒醒著，所以我沒接話 —— 喊一聲「Lucas」）", 3200, "你說");
+        cstat.textContent = "還沒喚醒。喊一聲 Lucas 再問。";
+      }
+      return;
+    }
     setAwake(true);                     // 續命，對話中不用一直喊名字
     if (tryCommand(t)) return;
     if (raw.trim().length >= 2){ openChat(); ask(raw.trim()); }

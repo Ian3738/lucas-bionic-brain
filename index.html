@@ -188,7 +188,8 @@
     </div>
     <div class="row" id="pathRow">
       <span class="lab">這一場</span>
-      <button data-path="done" aria-pressed="true">整合輸出 done</button>
+      <button data-path="auto" aria-pressed="true">自動（依階段）</button>
+      <button data-path="done" aria-pressed="false">整合輸出 done</button>
       <button data-path="loop" aria-pressed="false">原地繞圈 returnLimit</button>
       <button data-path="dead" aria-pressed="false">線接錯 deadEnd</button>
     </div>
@@ -399,6 +400,9 @@
 
   // ── 狀態 ──────────────────────────────────────────────────
   let stageIx = 0, pathKey = "done";
+  /* 自動 = 訊號走哪條鏈由成長階段決定（跟它講話時會照這個走）。
+     手動指定之後就固定住，對話不會再覆蓋掉 —— 否則那三顆按鈕形同虛設。 */
+  let pathAuto = true;
   /**
    * 粒子鬆緊與濃度**平滑過渡**，不是瞬間跳。
    * 上課拖滑桿時那個「收攏／散開」的過程本身就是要給學生看的東西 ——
@@ -772,17 +776,23 @@
     nameEl.textContent = S.name;
     descEl.innerHTML =
       `${S.age}　·　接地率約 <b>${Math.round(S.ground*100)}%</b>　·　成熟 <b>${S.lit}</b> / 5 個腦區<br>${S.desc}`;
+    if (pathAuto && pathKey !== S.path){ pathKey = S.path; setPathUI(); if (mode === "chain") buildSignals(); }
     // 賽跑的速差與並行度都綁在階段上，換階段就要重組
     if (mode !== "chain") buildSignals();
     document.dispatchEvent(new CustomEvent("stagechange", { detail:{ index:stageIx, stage:S } }));
   }
   slider.addEventListener("input", () => { stageIx = +slider.value; paintStage(); });
   paintStage();
-  function setPathUI(key){
+  function setPathUI(){
+    const on = pathAuto ? "auto" : pathKey;
     document.querySelectorAll("[data-path]").forEach(o =>
-      o.setAttribute("aria-pressed", String(o.dataset.path===key)));
+      o.setAttribute("aria-pressed", String(o.dataset.path === on)));
   }
-  group("[data-path]",  b => { pathKey = b.dataset.path; replay(); });
+  document.querySelectorAll("[data-path]").forEach(b => b.addEventListener("click", () => {
+    if (b.dataset.path === "auto"){ pathAuto = true; pathKey = STAGES[stageIx].path; }
+    else { pathAuto = false; pathKey = b.dataset.path; }
+    setPathUI(); replay();
+  }));
   group("[data-mode]",  b => {
     mode = b.dataset.mode;
     document.getElementById("pathRow").classList.toggle("dim", mode !== "chain");
@@ -818,10 +828,14 @@
       stageIx = Math.max(0, Math.min(STAGES.length-1, i|0));
       slider.value = stageIx; paintStage();
     },
-    /** 依現在的階段走該走的那條鏈 —— 低階段就是會接錯，這不是 bug */
+    /**
+     * 依現在的階段走該走的那條鏈 —— 低階段就是會接錯，這不是 bug。
+     * ⚠ 只在「自動」時才覆蓋。使用者手動指定過就尊重他的選擇，
+     *   否則那三顆按鈕按了等於沒按（問一句話就被蓋回去）。
+     */
     runOwnPath(){
-      pathKey = STAGES[stageIx].path;
-      setPathUI(pathKey); replay();
+      if (pathAuto){ pathKey = STAGES[stageIx].path; setPathUI(); }
+      replay();
       return pathKey;
     },
     setSpeaking(v){ speaking = !!v; },
@@ -1104,6 +1118,33 @@
                                  而且等待時間跟音訊長度成正比（1.67 + 0.518×秒數）
          :streamGenerateContent  邊合成邊吐     → 第一塊 1.0 秒，跟文字長度幾乎無關
        這是整頁最大的一筆延遲，佔改版前 23 秒總等待的九成。                */
+  /**
+   * ⚠ 串流一定要有看門狗。
+   *
+   * HTTPS 接通、回了 200、然後一個 byte 都不送 —— 教室換 AP、校園做流量整形、
+   * 或伺服器端排隊時就是這個樣子。TCP 沒斷，所以 fetch 不會拒絕、read() 也不會回來，
+   * 那個 await 會永遠停在那裡。後果不是「沒聲音」而已：say() 的 finally 跑不到，
+   * recPaused 永遠是 true，麥克風再也不會被接回來，而且 busy 也卡住 ——
+   * 使用者連「關麥克風再開」都救不回來，因為 heard() 在 busy 時會把每一句都丟掉。
+   *
+   * 15 秒是很寬鬆的門檻：實測 TTS 第一塊約 1 秒，塊與塊之間最大間隔 0.16 秒。
+   */
+  const STALL_MS = 15000;
+  /**
+   * 直接讓 read() 跟計時器賽跑，不要靠 ctl.abort() 去戳它。
+   * abort 能不能讓一個已經拿到 200、正在讀 body 的串流拒絕，取決於實作與中間層；
+   * 押在那上面的話，押錯就是麥克風永遠回不來。這裡自己決定什麼時候放棄。
+   */
+  function readOrStall(reader, ms){
+    let t;
+    return Promise.race([
+      reader.read().then(v => { clearTimeout(t); return v; }),
+      new Promise((_, rej) => { t = setTimeout(() => {
+        const e = new Error("串流停住了"); e.stalled = true; rej(e);
+      }, ms); }),
+    ]);
+  }
+
   const ttsCache = new Map();
   async function streamSpeak(text, P, gen){
     const ck = P.voice + "|" + P.style + "|" + text;
@@ -1124,18 +1165,18 @@
 
     let lastErr = null;
     for (const model of TTS_MODELS){
-      const chunks = []; let got = 0;
+      const chunks = []; let got = 0; let reader = null;
+      const ctl = new AbortController(); curAbort = ctl;
       try {
-        const ctl = new AbortController(); curAbort = ctl;
         const r = await fetch(
           API + model + ":streamGenerateContent?alt=sse&key=" + encodeURIComponent(API_KEY),
           { method:"POST", headers:{ "Content-Type":"application/json" }, body, signal: ctl.signal });
         if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
 
-        const reader = r.body.getReader(); curReader = reader;
+        reader = r.body.getReader(); curReader = reader;
         const dec = new TextDecoder(); let buf = "";
         for (;;){
-          const { done, value } = await reader.read();
+          const { done, value } = await readOrStall(reader, STALL_MS);
           if (done) break;
           if (gen !== speakGen){ try { reader.cancel(); } catch(e){} return; }
           buf += dec.decode(value, { stream:true });
@@ -1168,8 +1209,14 @@
         if (text.length <= 24) ttsCache.set(ck, concatBytes(chunks));
         return waitTail();
       } catch(e){
+        try { reader && reader.cancel(); } catch(_){}
+        try { ctl.abort(); } catch(_){}
         curReader = null; curAbort = null;
         if (gen !== speakGen) return;
+        if (e && e.stalled){
+          showBubble("（聲音卡住了，改用備用語音）", 3600, "LUCAS");
+          throw e;                            // 交給 say() 的 catch 退到瀏覽器語音
+        }
         // 已經播出去的不能重來，否則換模型重試會把同一句話唸兩次；
         // 但要講一聲，不然使用者只覺得它講到一半自己吞回去
         if (got > 0){ showBubble("（聲音斷在中間了）", 3000, "LUCAS"); return waitTail(); }
@@ -1381,7 +1428,8 @@
       const r = await fetch(
         API + CHAT_MODEL + ":streamGenerateContent?alt=sse&key=" + encodeURIComponent(API_KEY),
         { method:"POST", headers:{ "Content-Type":"application/json" },
-          body: JSON.stringify(mk(cfg)), signal: ctl.signal });
+          body: JSON.stringify(mk(cfg)), signal: ctl.signal }
+      );
 
       if (!r.ok){
         const j = await r.json().catch(() => null);
@@ -1395,32 +1443,41 @@
 
       const reader = r.body.getReader(), dec = new TextDecoder();
       let buf = "", text = "", cut = "";
-      for (;;){
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream:true });
-        let nl;
-        while ((nl = buf.indexOf("\n")) >= 0){
-          // \r\n 的行尾也要吃掉，不然 JSON.parse 會整行失敗
-          const line = buf.slice(0, nl).replace(/\r$/, ""); buf = buf.slice(nl + 1);
-          if (!line.startsWith("data:")) continue;
-          const pl = line.slice(5).trim();
-          if (!pl || pl === "[DONE]") continue;
-          let j; try { j = JSON.parse(pl); } catch(e){ continue; }
-          /* ⚠ 串流中途是會送 error frame 的，而 HTTP 狀態早就 200 了。
-             不看這個的話，半段答案會被當成完整答案唸出來、還寫進對話歷史。 */
-          if (j?.error){ cut = j.error.message || "串流中斷"; break; }
-          const cand = j?.candidates?.[0];
-          for (const part of (cand?.content?.parts || [])){
-            if (typeof part.text === "string" && part.text){
-              text += part.text;
-              if (onDelta) onDelta(text);
+      try {
+        for (;;){
+          const { done, value } = await readOrStall(reader, STALL_MS);
+          if (done) break;
+          buf += dec.decode(value, { stream:true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0){
+            // \r\n 的行尾也要吃掉，不然 JSON.parse 會整行失敗
+            const line = buf.slice(0, nl).replace(/\r$/, ""); buf = buf.slice(nl + 1);
+            if (!line.startsWith("data:")) continue;
+            const pl = line.slice(5).trim();
+            if (!pl || pl === "[DONE]") continue;
+            let j; try { j = JSON.parse(pl); } catch(e){ continue; }
+            /* ⚠ 串流中途是會送 error frame 的，而 HTTP 狀態早就 200 了。
+               不看這個的話，半段答案會被當成完整答案唸出來、還寫進對話歷史。 */
+            if (j?.error){ cut = j.error.message || "串流中斷"; break; }
+            const cand = j?.candidates?.[0];
+            for (const part of (cand?.content?.parts || [])){
+              if (typeof part.text === "string" && part.text){
+                text += part.text;
+                if (onDelta) onDelta(text);
+              }
             }
+            const fr = cand?.finishReason;
+            if (fr && fr !== "STOP"){ cut = fr; }
           }
-          const fr = cand?.finishReason;
-          if (fr && fr !== "STOP"){ cut = fr; }
+          if (cut) break;
         }
-        if (cut) break;
+      } catch(e){
+        try { reader.cancel(); } catch(_){}
+        try { ctl.abort(); } catch(_){}
+        chatAbort = null;
+        // 卡住時：已經收到一部分字的話留著當截斷處理，一個字都沒有就往上丟
+        if (e && e.stalled){ if (!text) throw e; cut = cut || "連線卡住"; }
+        else throw e;
       }
       chatAbort = null;
       const out = text.trim();
@@ -1625,8 +1682,31 @@
   }
   function startRec(){ if (!rec) rec = buildRec(); if (!rec) return false;
     try { rec.start(); } catch(e){} return true; }
-  function pauseRec(){ recPaused = true; clearInterim(); if (rec) try { rec.stop(); } catch(e){} }
-  function resumeRec(){ recPaused = false; if (micOn) startRec(); }
+  /**
+   * ⚠ 麥克風被關起來的時間一定要有上限。
+   *
+   * 整頁只有三個地方會呼叫 resumeRec()，其中兩個都得先讓 say() 正常走完。
+   * 只要有任何一條路把 say() 卡死，麥克風就永遠回不來，而且畫面上看不出來 ——
+   * 燈還亮著、按鈕還寫「關麥克風」。這是單點失效，所以另外掛一個絕對上限。
+   *
+   * 120 秒：專家階段最長的回答約 40 秒音訊，留三倍餘裕。
+   */
+  const REC_MAX_PAUSE_MS = 120000;
+  let recGuard = null;
+  function pauseRec(){
+    recPaused = true; clearInterim();
+    clearTimeout(recGuard);
+    recGuard = setTimeout(() => {
+      if (!micOn || !recPaused) return;
+      // 走到這裡表示上面卡住了。busy 也一起放掉，否則辨識器活了但每一句還是被丟掉。
+      busy = false; showStop(false);
+      window.BRAIN.setSpeaking(false); window.BRAIN.setActivity("idle");
+      showBubble("（剛剛卡住了，我重新開始聽）", 3600, "LUCAS");
+      resumeRec();
+    }, REC_MAX_PAUSE_MS);
+    if (rec) try { rec.stop(); } catch(e){}
+  }
+  function resumeRec(){ clearTimeout(recGuard); recGuard = null; recPaused = false; if (micOn) startRec(); }
 
   function paintMic(){
     ["bMic","fMic"].forEach(id => $(id).setAttribute("aria-pressed", String(micOn)));

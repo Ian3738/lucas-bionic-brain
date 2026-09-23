@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lucas · 仿生大腦</title>
+<meta name="description" content="一顆會長大的仿生大腦。喚它「Hi, Lucas」就會回話 —— 而它在哪個成長階段，回話的樣子就完全不同。">
+<meta property="og:title" content="Lucas · 仿生大腦">
+<meta property="og:description" content="拖滑桿讓它從新生兒長到專家，喚一聲 Lucas 跟它說話。每個階段的腦，講話的方式不一樣。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#129504;</text></svg>">
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --line:#e4e6ea; --ink:#16181d; --muted:#6b7280;
+    --accent:#4f46e5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d0f14; --panel:#14171f; --line:#262b36; --ink:#e8eaee; --muted:#9aa3b2;
+      --accent:#7c6cff;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d0f14; --panel:#14171f; --line:#262b36; --ink:#e8eaee; --muted:#9aa3b2;
+    --accent:#7c6cff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;
+    min-height:100vh;
+  }
+  .wrap{max-width:1100px;margin:0 auto;padding:20px 16px 48px}
+  h1{font-size:17px;margin:0 0 2px;font-weight:650}
+  .sub{font-size:12.5px;color:var(--muted);margin:0 0 14px;line-height:1.6}
+  .stage{
+    position:relative;background:#05070d;border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;touch-action:none;cursor:grab;
+  }
+  .stage:active{cursor:grabbing}
+  canvas{display:block;width:100%;height:auto}
+  .step{
+    position:absolute;left:14px;top:12px;font-size:12px;color:#cbd5e1;
+    pointer-events:none;letter-spacing:.02em;line-height:1.5;
+  }
+  .step b{color:#fff;font-weight:600}
+  .hint{position:absolute;left:14px;bottom:10px;font-size:11px;color:#5b6472;pointer-events:none}
+
+  /* ── 語音狀態燈：右上角，照島語的三態 ─────────────────── */
+  .vstat{position:absolute;right:13px;top:12px;display:flex;align-items:center;gap:7px;
+    font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;
+    color:#64748b;pointer-events:none;user-select:none}
+  #vdot{width:8px;height:8px;border-radius:50%;background:#3a4252;flex:none;transition:background .2s}
+  #vdot.listening{background:#38bdf8;box-shadow:0 0 12px rgba(56,189,248,.85);animation:vp 1.8s ease-in-out infinite}
+  #vdot.awake{background:#ff8fa3;box-shadow:0 0 16px rgba(255,143,163,.95);animation:vp .9s ease-in-out infinite}
+  #vdot.thinking{background:#fbbf24;box-shadow:0 0 14px rgba(251,191,36,.9);animation:vp .6s ease-in-out infinite}
+  @keyframes vp{0%,100%{opacity:1}50%{opacity:.32}}
+
+  /* ── Lucas 的對白泡 ──────────────────────────────────── */
+  #bubble{
+    position:absolute;left:50%;bottom:34px;transform:translateX(-50%) translateY(10px);
+    max-width:min(560px,86%);padding:13px 17px 14px;border-radius:14px;
+    background:rgba(10,14,24,.93);border:1px solid rgba(124,108,255,.42);
+    color:#e6e9f2;font-size:13.5px;line-height:1.72;
+    opacity:0;transition:opacity .34s,transform .34s;pointer-events:none;
+    backdrop-filter:blur(9px);box-shadow:0 10px 38px rgba(0,0,0,.5)
+  }
+  #bubble.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #bubble::before{
+    content:attr(data-who);position:absolute;top:-10px;left:16px;
+    background:#7c6cff;color:#fff;font-size:9.5px;font-weight:700;letter-spacing:.1em;
+    padding:2px 8px;border-radius:99px
+  }
+
+  .panel{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  .row:last-child{margin-bottom:0}
+  .lab{font-size:11.5px;color:var(--muted);min-width:64px}
+  button{font:inherit;font-size:12px;padding:5px 11px;border-radius:999px;
+    border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+  button:hover{border-color:#8b8f99}
+  button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:11px;font-size:11.5px}
+  .lg{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .note{font-size:11.5px;color:var(--muted);line-height:1.65;margin:11px 0 0}
+  .note b{color:var(--ink);font-weight:600}
+  .stagerow input[type=range]{flex:1;min-width:180px;max-width:420px;accent-color:var(--accent);height:22px}
+  .stagename{font-size:13px;font-weight:650;min-width:5.5em}
+  .stagedesc{font-size:11.5px;color:var(--muted);line-height:1.6;margin:-4px 0 10px 64px}
+  @media (max-width:560px){ .lab{min-width:100%} .stagedesc{margin-left:0} }
+
+  /* ── 對話面板 ──────────────────────────────────────────── */
+  #chat{
+    position:fixed;right:0;top:0;bottom:0;width:min(400px,92vw);z-index:60;
+    background:var(--panel);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;
+    transform:translateX(102%);transition:transform .34s cubic-bezier(.4,0,.2,1);
+    box-shadow:-14px 0 44px rgba(0,0,0,.2)
+  }
+  #chat.open{transform:none}
+  .chead{display:flex;align-items:center;gap:9px;padding:14px 15px;border-bottom:1px solid var(--line);flex:none}
+  .chead h2{font-size:13.5px;margin:0;font-weight:650;flex:1}
+  .chead .sm{font-size:11px;color:var(--muted);font-weight:400}
+  .cbody{flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:13px}
+  .msg{max-width:88%;font-size:13px;line-height:1.75;padding:9px 13px;border-radius:13px;white-space:pre-wrap;word-break:break-word}
+  .msg.me{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+  .msg.ai{align-self:flex-start;background:rgba(127,127,140,.13);border:1px solid var(--line);border-bottom-left-radius:4px}
+  .msg.ai::before{content:attr(data-stage);display:block;font-size:9.5px;color:var(--muted);
+    letter-spacing:.06em;margin-bottom:4px;font-weight:600}
+  .msg.sys{align-self:center;font-size:11px;color:var(--muted);background:none;padding:2px}
+  .cfoot{flex:none;border-top:1px solid var(--line);padding:11px 12px}
+  .cfoot .ci{display:flex;gap:7px;align-items:flex-end}
+  #cin{flex:1;font:inherit;font-size:13px;padding:8px 11px;border-radius:11px;resize:none;
+    border:1px solid var(--line);background:transparent;color:var(--ink);max-height:110px;min-height:37px;line-height:1.5}
+  #cin:focus{outline:none;border-color:var(--accent)}
+  .cstat{font-size:10.5px;color:var(--muted);margin:7px 2px 0;min-height:1.3em;line-height:1.4}
+  .iconbtn{width:37px;height:37px;padding:0;display:inline-flex;align-items:center;justify-content:center;
+    border-radius:11px;font-size:15px;flex:none}
+
+  /* ── 浮動按鈕 ──────────────────────────────────────────── */
+  .fabs{position:fixed;right:18px;bottom:18px;z-index:55;display:flex;flex-direction:column;gap:9px}
+  .fab{width:50px;height:50px;border-radius:50%;padding:0;font-size:20px;
+    background:var(--panel);border:1px solid var(--line);box-shadow:0 5px 20px rgba(0,0,0,.22);
+    display:flex;align-items:center;justify-content:center}
+  .fab.main{background:var(--accent);border-color:var(--accent);color:#fff}
+  .fab.mic[aria-pressed="true"]{background:#ef4460;border-color:#ef4460;color:#fff;
+    animation:mp 1.6s ease-in-out infinite}
+  @keyframes mp{0%,100%{box-shadow:0 5px 20px rgba(239,68,96,.5)}50%{box-shadow:0 5px 30px rgba(239,68,96,.95)}}
+
+  /* ── 金鑰設定視窗 ──────────────────────────────────────── */
+  #keymodal{position:fixed;inset:0;z-index:90;background:rgba(6,8,14,.72);backdrop-filter:blur(5px);
+    display:none;align-items:center;justify-content:center;padding:20px}
+  #keymodal.open{display:flex}
+  .kcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:24px 24px 20px;max-width:470px;width:100%;box-shadow:0 22px 64px rgba(0,0,0,.42)}
+  .kcard h2{font-size:15.5px;margin:0 0 9px;font-weight:650}
+  .kcard p{font-size:12.5px;color:var(--muted);line-height:1.75;margin:0 0 13px}
+  .kcard a{color:var(--accent)}
+  .kcard input{width:100%;font:inherit;font-size:12.5px;padding:10px 12px;border-radius:10px;
+    border:1px solid var(--line);background:transparent;color:var(--ink);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .kcard input:focus{outline:none;border-color:var(--accent)}
+  .kbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .kbtns .go{background:var(--accent);border-color:var(--accent);color:#fff;padding:7px 18px}
+  .kwarn{font-size:11.5px;line-height:1.7;color:var(--muted);
+    background:rgba(251,191,36,.09);border:1px solid rgba(251,191,36,.3);
+    border-radius:9px;padding:9px 11px;margin:13px 0 0}
+  .kwarn b{color:var(--ink)}
+  #kerr{font-size:11.5px;color:#ef4460;margin:9px 0 0;min-height:1.2em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lucas · 仿生大腦</h1>
+  <p class="sub">外殼只是一層稀疏輪廓，不模擬皮質。五個腦區位置釘死，之間的連線就是這一組接的鏈 —— 訊號走過哪一條，那條就亮起來。拖曳可旋轉。<br>
+  開麥克風之後喊一聲「<b>Hi, Lucas</b>」它就醒來，接著直接問問題。<b>它在哪一格，就用哪一格的腦回答你。</b></p>
+
+  <div class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="step" id="step"></div>
+    <div class="vstat"><span id="vdot"></span><span id="vlabel">VOICE OFF</span></div>
+    <div class="hint" id="hint">拖曳旋轉</div>
+    <div id="bubble" data-who="LUCAS"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row stagerow">
+      <span class="lab">成長階段</span>
+      <input type="range" id="stageSlider" min="0" max="7" step="1" value="0" aria-label="成長階段">
+      <span class="stagename" id="stageName"></span>
+    </div>
+    <p class="stagedesc" id="stageDesc"></p>
+    <div class="row">
+      <span class="lab">這一場</span>
+      <button data-path="done" aria-pressed="true">整合輸出 done</button>
+      <button data-path="loop" aria-pressed="false">原地繞圈 returnLimit</button>
+      <button data-path="dead" aria-pressed="false">線接錯 deadEnd</button>
+    </div>
+    <div class="row">
+      <span class="lab">畫面</span>
+      <button id="bShell" aria-pressed="true">外殼</button>
+      <button id="bNet" aria-pressed="true">神經網絡</button>
+      <button id="bSpin" aria-pressed="true">自動旋轉</button>
+      <button id="bReplay">重播</button>
+    </div>
+    <div class="row">
+      <span class="lab">語音</span>
+      <button id="bMic" aria-pressed="false">開麥克風，等我喊 Lucas</button>
+      <button id="bKey">API 金鑰</button>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="note">
+      <b>拖滑桿。</b>粒子會當場收攏或散開 —— 那個過程本身就是要給學生看的：
+      教得愈紮實，它說的話愈站得住，粒子就愈實心地貼在腦區上。<br>
+      <b>腦區點亮的順序照真實的發育順序</b>：杏仁核與海馬迴早熟，預設模式網絡在青春期成形，
+      前額葉最晚，後設監控的查核守衛最後。灰掉的是「還沒有人教它這一塊」。<br>
+      ⚠ <b>「大腦發展到 25 歲」方向對、數字是約定。</b>前額葉與它的白質連結確實成熟得最晚、延續到二十多歲，
+      但發育是連續的、個體差異很大 —— 25 是好記的標記，不是一條線。跟學生講的時候把這句一起講，
+      否則會變成「生日一過就換了顆腦」。<br>
+      <b>訊號仍然會走到灰掉的腦區</b> —— 那是刻意的：它跑去問前額葉，而那裡還沒有東西。<br>
+      <b>走過的連線會留下餘溫。</b>切到「原地繞圈」看那兩條線怎麼愈燒愈亮 —— 那是乒乓球退化，現在看得見了。<br>
+      <b>跟它說話的時候，訊號走哪一條是它自己決定的。</b>問新生兒，線會接錯；問學齡前，它在原地繞圈；
+      要到青年以後，訊號才走得完整合輸出那一圈。這條規則沒有寫死給哪個問題，是綁在階段上的。
+    </p>
+  </div>
+</div>
+
+<!-- 對話面板 -->
+<aside id="chat">
+  <div class="chead">
+    <span class="dot" style="background:#7c6cff"></span>
+    <h2>跟 Lucas 說話 <span class="sm" id="chatStage"></span></h2>
+    <button class="iconbtn" id="cClear" title="清空這段對話">🗑</button>
+    <button class="iconbtn" id="cClose" title="關閉">✕</button>
+  </div>
+  <div class="cbody" id="cbody"></div>
+  <div class="cfoot">
+    <div class="ci">
+      <textarea id="cin" rows="1" placeholder="打字問它，或按右邊的麥克風"></textarea>
+      <button class="iconbtn" id="cMic" title="說一句話">🎤</button>
+      <button class="iconbtn" id="cSend" title="送出">↑</button>
+    </div>
+    <p class="cstat" id="cstat"></p>
+  </div>
+</aside>
+
+<div class="fabs">
+  <button class="fab mic" id="fMic" aria-pressed="false" title="開麥克風，等我喊 Lucas">🎙</button>
+  <button class="fab main" id="fChat" title="跟 Lucas 說話">💬</button>
+</div>
+
+<!-- 金鑰 -->
+<div id="keymodal">
+  <div class="kcard">
+    <h2>貼上你的 Gemini API 金鑰</h2>
+    <p>Lucas 的腦袋和聲音都由 Google Gemini 提供。這個網站沒有後端，金鑰只存在<b>你這台裝置的瀏覽器裡</b>（localStorage），不會上傳，也不在原始碼裡。<br>
+    去 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> 免費申請一把。</p>
+    <input id="kin" type="password" placeholder="AIza..." autocomplete="off" spellcheck="false">
+    <p id="kerr"></p>
+    <div class="kwarn">
+      <b>換一台裝置或換一個瀏覽器就要再貼一次</b>，這是刻意的 —— 金鑰一旦寫進公開的原始碼就會被爬走盜用，額度算你的。
+      如果要給整班學生用，讓他們各自申請一把，別共用你的。
+    </div>
+    <div class="kbtns">
+      <button id="kCancel">稍後再說</button>
+      <button class="go" id="kSave">存起來</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   第一部分：腦。粒子、腦區、訊號走鏈。
+   這一段不碰網路，沒有金鑰也完整運作。
+   ══════════════════════════════════════════════════════════════ */
+(() => {
+  "use strict";
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d", { alpha: false });
+  const stage = document.getElementById("stage");
+  const stepEl = document.getElementById("step");
+
+  // ── 五個腦區：3D 座標釘死，八顆腦共用同一組 ──────────────────
+  // x 左(-)/右(+)　y 下(-)/上(+)　z 後(-)/前(+)
+  const R = {
+    pfc:         { zh:"前額葉皮質",   abbr:"DLPFC", c:[ 94,168,255], p:[ 0.40, 0.30, 0.60] },
+    verifier:    { zh:"知識查核守衛", abbr:"ACC",   c:[ 74,222,128], p:[ 0.02, 0.28, 0.30] },
+    amygdala:    { zh:"杏仁核",       abbr:"AMY",   c:[255, 95,122], p:[ 0.36,-0.30, 0.28] },
+    hippocampus: { zh:"海馬迴",       abbr:"HPC",   c:[ 46,230,214], p:[ 0.38,-0.22,-0.05] },
+    dmn:         { zh:"預設模式網絡", abbr:"PCC",   c:[139,124,255], p:[ 0.02, 0.18,-0.62] },
+  };
+  const IDS = Object.keys(R);
+
+  // 這一組接的鏈 —— 網絡本身。訊號沒走過的線也畫，只是暗的。
+  const EDGES = [
+    ["pfc","hippocampus"], ["pfc","amygdala"], ["pfc","verifier"], ["pfc","dmn"],
+    ["hippocampus","verifier"], ["amygdala","hippocampus"],
+    ["dmn","hippocampus"], ["verifier","dmn"],
+  ];
+  const ekey = (a,b) => a < b ? a+">"+b : b+">"+a;
+
+  const PATHS = {
+    done: ["pfc","amygdala","hippocampus","verifier","dmn","pfc"],
+    loop: ["pfc","hippocampus","pfc","hippocampus","pfc","hippocampus"],
+    dead: ["pfc","dmn","hippocampus"],
+  };
+  const STOPTXT = {
+    done: "停止：<b>done</b> · 整合輸出",
+    loop: "停止：<b>returnLimit</b> · 在原地繞圈",
+    dead: "停止：<b>deadEnd</b> · 交給鏈上沒有的角色",
+  };
+
+  // ── 腦外殼：變形橢球 + 顳葉 + 小腦 + 腦幹 ────────────────────
+  const rnd = Math.random;
+  function onSphere(){
+    const u = rnd()*2-1, t = rnd()*6.2832, s = Math.sqrt(1-u*u);
+    return [s*Math.cos(t), u, s*Math.sin(t)];
+  }
+  function buildShell(){
+    const pts = [];
+    for (let i=0;i<2000;i++){                        // 大腦：前窄後圓、底面壓平
+      let [x,y,z] = onSphere();
+      x*=0.60; y*=0.50; z*=0.84;
+      const tf = 1 - 0.20*Math.max(0,z)**2, to = 1 - 0.08*Math.max(0,-z)**2;
+      x *= tf*to; y *= tf;
+      if (y < 0) y *= 0.66;
+      pts.push([x, y+0.10, z, 0]);
+    }
+    for (let i=0;i<500;i++){                         // 顳葉
+      const [x,y,z] = onSphere(), side = rnd()<0.5 ? -1 : 1;
+      pts.push([ side*(0.30+Math.abs(x)*0.19), -0.26+y*0.15, 0.10+z*0.34, 0 ]);
+    }
+    for (let i=0;i<400;i++){                         // 小腦
+      const [x,y,z] = onSphere();
+      pts.push([ x*0.34, -0.40+y*0.17, -0.58+z*0.24, 1 ]);
+    }
+    for (let i=0;i<180;i++){                         // 腦幹
+      const t = rnd(), rr = 0.115*(1-0.45*t), a = rnd()*6.2832;
+      pts.push([ Math.cos(a)*rr, -0.26-t*0.62, -0.20+Math.sin(a)*rr*1.5, 1 ]);
+    }
+    return pts;
+  }
+  const SHELL = buildShell();
+
+  /**
+   * 八個成長階段。
+   *
+   * 串起它們的軸是**接地率** —— 系統本來就會算的那個數字（逐字引文查核通過的
+   * 比例）。所以這條尺不是比喻，跑一場真的執行就對得上刻度。
+   *
+   * `lit` 是這個階段有幾個腦區成熟。⚠ 點亮的**順序**照真實的發育順序：
+   * 杏仁核與海馬迴早熟、預設模式網絡在青春期成形、前額葉最晚、後設監控最後。
+   * 這是教學用的對應，不是解剖主張。
+   *
+   * `path` 是這個階段被問問題時，訊號實際走的那條鏈。低階段接錯或繞圈，
+   * 不是隨機的裝飾 —— 那就是它答不好的原因，畫出來給學生看。
+   *
+   * ⚠ 最後一格「專家」**不是年齡，是專精**。前七格是發育，一顆被教得非常紮實
+   *   的腦不會因此變老。混在同一條滑桿上是為了教學方便，但這件事要對學生講明。
+   */
+  const STAGES = [
+    { name:"新生兒", age:"0–1 歲", sigma:0.200, alpha:0.24, lit:1, ground:0, path:"dead",
+      desc:"皮質下先行 —— 杏仁核與腦幹在運作。它照樣會回答，但每一句都是自己補的。" },
+    { name:"幼兒", age:"1–3 歲", sigma:0.165, alpha:0.31, lit:2, ground:0.08, path:"dead",
+      desc:"海馬迴上線，情節記憶開始。引得出零星幾句，大部分仍然靠想像。" },
+    { name:"學齡前", age:"3–6 歲", sigma:0.135, alpha:0.39, lit:2, ground:0.18, path:"loop",
+      desc:"語言與工作記憶的雛形。記得住的東西變多，但還串不成推理。" },
+    { name:"學齡", age:"6–12 歲", sigma:0.108, alpha:0.47, lit:3, ground:0.32, path:"loop",
+      desc:"髓鞘化大幅推進，預設模式網絡開始成形。三分之一的話站得住。" },
+    { name:"青春期", age:"12–18 歲", sigma:0.085, alpha:0.56, lit:3, ground:0.48, path:"loop",
+      desc:"🔴 情緒系統跑在控制系統前面 —— 杏仁核與 DMN 已經很活躍，前額葉還沒跟上。過半有依據，但容易衝。" },
+    { name:"青年", age:"18–25 歲", sigma:0.064, alpha:0.68, lit:4, ground:0.64, path:"done",
+      desc:"前額葉仍在成熟，衝動控制持續改善。會規劃、會收斂，但還沒學會查核自己。" },
+    { name:"成人", age:"25 歲之後", sigma:0.046, alpha:0.79, lit:5, ground:0.80, path:"done",
+      desc:"前額葉大致成熟，後設監控穩定。五個腦區都上線了。" },
+    { name:"專家", age:"⚠ 不是年齡", sigma:0.030, alpha:0.92, lit:5, ground:0.93, path:"done",
+      desc:"幾乎每一句都逐字站得住。⚠ 這一格是專精不是年齡 —— 一顆被教得紮實的腦不會因此變老。" },
+  ];
+  const MATURE_ORDER = ["amygdala","hippocampus","dmn","pfc","verifier"];
+  const CLOUD = {};
+  for (const id of IDS){
+    const a = [];
+    const g = () => { const u = Math.max(1e-9, rnd());
+      return Math.sqrt(-2*Math.log(u))*Math.cos(6.2832*rnd()); };
+    for (let i=0;i<200;i++) a.push([g(), g(), g(), 0.45+rnd()*0.55]);
+    CLOUD[id] = a;
+  }
+  // 神經纖維：每區向外放射的細絲，會閃 —— 「活著」的質感，不是皮質
+  const FIB = {};
+  for (const id of IDS){
+    const a = [];
+    for (let i=0;i<14;i++){
+      const [x,y,z] = onSphere();
+      a.push([x,y,z, 0.10+rnd()*0.13, rnd()*6.2832]);
+    }
+    FIB[id] = a;
+  }
+
+  // ── 狀態 ──────────────────────────────────────────────────
+  let stageIx = 0, pathKey = "done";
+  /**
+   * 粒子鬆緊與濃度**平滑過渡**，不是瞬間跳。
+   * 上課拖滑桿時那個「收攏／散開」的過程本身就是要給學生看的東西 ——
+   * 直接換值的話只會看到前後兩張定格。
+   */
+  let curSigma = STAGES[0].sigma, curAlpha = STAGES[0].alpha;
+  let showShell = true, showNet = true, spin = true;
+  let yaw = -0.55, pitch = -0.18, dragging = false, lastX = 0, lastY = 0;
+  const heat = {};                 // 每條線的餘溫
+  let runT = 0, hopIdx = 0, finished = false;
+  const HOP_SEC = 1.15;
+  let speaking = false;            // Lucas 正在講話 → 腦區呼吸加快
+
+  function replay(){ runT = 0; hopIdx = 0; finished = false; for (const k in heat) heat[k] = 0; }
+
+  // ── 投影 ──────────────────────────────────────────────────
+  let W=900, H=520, DPR=1, SC=1;
+  const FOCAL = 3.1;
+  function resize(){
+    W = stage.clientWidth || 900;
+    H = Math.round(Math.min(560, Math.max(320, W*0.56)));
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.height = H+"px";
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    SC = Math.min(W/2.25, H/1.55);
+  }
+  function project(x,y,z){
+    const cy=Math.cos(yaw), sy=Math.sin(yaw), cp=Math.cos(pitch), sp=Math.sin(pitch);
+    const X = x*cy + z*sy;
+    let Z = -x*sy + z*cy;
+    const Y = y*cp - Z*sp;
+    Z = y*sp + Z*cp;
+    const s = FOCAL/(FOCAL+Z);
+    return [ W/2 + X*s*SC, H/2 - Y*s*SC, Z, s ];
+  }
+  // 兩區之間的弧線：中點往外推，線才不會穿過腦心
+  function ctrl(a,b){
+    const A=R[a].p, B=R[b].p;
+    return [ (A[0]+B[0])*0.72, (A[1]+B[1])/2+0.20, (A[2]+B[2])*0.62 ];
+  }
+  function bez(A,M,B,u){
+    const i=1-u;
+    return [ i*i*A[0]+2*i*u*M[0]+u*u*B[0],
+             i*i*A[1]+2*i*u*M[1]+u*u*B[1],
+             i*i*A[2]+2*i*u*M[2]+u*u*B[2] ];
+  }
+
+  // ── 繪製 ──────────────────────────────────────────────────
+  let prev = performance.now();
+  function draw(now){
+    const dt = Math.min(0.05, (now-prev)/1000); prev = now;
+    const el = now/1000;
+    if (spin && !dragging) yaw += 0.30*dt;
+
+    // 走鏈
+    const PATH = PATHS[pathKey];
+    if (!finished){
+      runT += dt;
+      const idx = Math.floor(runT/HOP_SEC);
+      if (idx >= PATH.length-1){ finished = true; hopIdx = PATH.length-2; }
+      else hopIdx = idx;
+    }
+    const frac = finished ? 1 : (runT % HOP_SEC)/HOP_SEC;
+    const from = PATH[hopIdx], to = PATH[hopIdx+1];
+    const activeKey = ekey(from,to);
+    heat[activeKey] = 1;
+    for (const k in heat) if (k !== activeKey) heat[k] = Math.max(0, heat[k] - 0.16*dt);
+
+    ctx.fillStyle = "#05070d"; ctx.fillRect(0,0,W,H);
+
+    // 外殼
+    if (showShell){
+      for (const tone of [0,1]){
+        for (let band=0;band<3;band++){
+          ctx.beginPath(); let n=0;
+          for (const p of SHELL){
+            if (p[3]!==tone) continue;
+            const [px,py,pz,s] = project(p[0],p[1],p[2]);
+            const d = (pz+1.1)/2.2;
+            const b = d<0.34?0:d<0.67?1:2;
+            if (b!==band) continue;
+            const r = 0.55+s*0.55;
+            ctx.moveTo(px+r,py); ctx.arc(px,py,r,0,6.2832); n++;
+          }
+          if (n){ ctx.fillStyle = `rgba(${tone?120:150},${tone?140:170},${tone?180:205},${0.055+band*0.07})`; ctx.fill(); }
+        }
+      }
+    }
+
+    // ── 神經網絡：所有連線都畫，走過的亮 ──────────────────────
+    if (showNet){
+      for (const [a,b] of EDGES){
+        const k = ekey(a,b), h = heat[k] ?? 0;
+        const A=R[a].p, B=R[b].p, M=ctrl(a,b);
+        ctx.beginPath();
+        for (let i=0;i<=22;i++){
+          const [x,y,z] = bez(A,M,B,i/22);
+          const [px,py] = project(x,y,z);
+          i ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+        }
+        const ca=R[a].c, cb=R[b].c;
+        const mix = [0,1,2].map(i => Math.round((ca[i]+cb[i])/2));
+        ctx.strokeStyle = `rgba(${mix.join(",")},${0.10 + h*0.72})`;
+        ctx.lineWidth = 0.7 + h*1.9;
+        ctx.stroke();
+
+        // 沿線流動的粒子：背景微光 + 現行那條的亮流
+        const cnt = k===activeKey ? 16 : 4;
+        for (let i=0;i<cnt;i++){
+          const u = k===activeKey
+            ? Math.max(0, Math.min(1, frac - i*0.030))
+            : ((el*0.11 + i/cnt) % 1);
+          if (u<=0 || u>=1) continue;
+          const [x,y,z] = bez(A,M,B,u);
+          const [px,py,,s] = project(x,y,z);
+          ctx.beginPath(); ctx.arc(px,py, (k===activeKey?1.7:1.0)*s+0.5, 0, 6.2832);
+          ctx.fillStyle = k===activeKey
+            ? `rgba(255,255,255,${0.75*(1-i/cnt)})`
+            : `rgba(${mix.join(",")},0.30)`;
+          ctx.fill();
+        }
+      }
+    }
+
+    // ── 五個腦區 ──────────────────────────────────────────
+    const visited = new Set(PATH.slice(0, hopIdx+2));
+    const ST = STAGES[stageIx];
+    // 指數逼近：每秒收斂約 92%，拖動時看得到收攏的過程
+    const k = 1 - Math.pow(0.08, dt);
+    curSigma += (ST.sigma - curSigma) * k;
+    curAlpha += (ST.alpha - curAlpha) * k;
+    const sg = curSigma;
+    /**
+     * 這個階段已經被教過的腦區。順序見 MATURE_ORDER。
+     * ⚠ 訊號仍然會走到還沒被教的腦區 —— 那是刻意的：畫面上看到的是
+     *   「它跑去問前額葉，但那裡還沒有人教它東西」，而那正是學生要看見的事。
+     */
+    const taught = new Set(MATURE_ORDER.slice(0, ST.lit));
+    for (const id of IDS){
+      const reg = R[id], [cr,cg,cb] = reg.c;
+      const isActive = (id===to && !finished) || (finished && id===PATH[PATH.length-1]);
+      const unused = !visited.has(id) || !taught.has(id);
+      // Lucas 在講話時整顆腦呼吸得比較急，讓聲音和畫面是同一件事
+      const beat = speaking ? 4.2 : 1.5, amp = speaking ? 0.11 : 0.06;
+      const pulse = isActive ? 1 + 0.22*Math.sin(el*7) : 1 + amp*Math.sin(el*beat);
+
+      // 神經纖維
+      if (!unused){
+        ctx.beginPath();
+        for (const f of FIB[id]){
+          const flick = 0.35 + 0.65*Math.abs(Math.sin(el*2.2 + f[4]));
+          const L = f[3]*flick*(isActive?1.35:1);
+          const [x0,y0] = project(reg.p[0],reg.p[1],reg.p[2]);
+          const [x1,y1] = project(reg.p[0]+f[0]*L, reg.p[1]+f[1]*L, reg.p[2]+f[2]*L);
+          ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+        }
+        ctx.strokeStyle = `rgba(${cr},${cg},${cb},${isActive?0.34:0.14})`;
+        ctx.lineWidth = 0.7; ctx.stroke();
+      }
+
+      // 粒子雲
+      ctx.beginPath();
+      for (const q of CLOUD[id]){
+        const [px,py,,s] = project(
+          reg.p[0]+q[0]*sg*pulse, reg.p[1]+q[1]*sg*pulse, reg.p[2]+q[2]*sg*pulse);
+        const r = (0.7+s*0.9)*q[3];
+        ctx.moveTo(px+r,py); ctx.arc(px,py,r,0,6.2832);
+      }
+      const base = curAlpha;
+      ctx.fillStyle = unused
+        ? "rgba(110,118,134,0.13)"
+        : `rgba(${cr},${cg},${cb},${base*(isActive?1.25:1)})`;
+      ctx.fill();
+
+      // 核心光暈
+      const [hx,hy,,hs] = project(reg.p[0],reg.p[1],reg.p[2]);
+      if (!unused){
+        const rad = (isActive?34:20)*hs*pulse;
+        const g = ctx.createRadialGradient(hx,hy,0,hx,hy,rad);
+        g.addColorStop(0, `rgba(${cr},${cg},${cb},${isActive?0.75:0.45})`);
+        g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(hx,hy,rad,0,6.2832); ctx.fill();
+      }
+      ctx.font = "600 11px ui-monospace,SFMono-Regular,Menlo,monospace";
+      ctx.fillStyle = unused ? "rgba(140,148,164,0.45)" : `rgba(${cr},${cg},${cb},0.95)`;
+      ctx.fillText(reg.abbr, hx+13*hs, hy-8*hs);
+      ctx.font = "11px -apple-system,'PingFang TC',sans-serif";
+      ctx.fillStyle = unused ? "rgba(140,148,164,0.34)" : "rgba(226,232,240,0.62)";
+      ctx.fillText(unused ? reg.zh+"（沒出場）" : reg.zh, hx+13*hs, hy+5*hs);
+    }
+
+    // 左上角的步驟說明
+    const trail = PATH.slice(0, hopIdx+2).map(id => R[id].abbr).join(" › ");
+    stepEl.innerHTML = finished
+      ? `${trail}<br>${STOPTXT[pathKey]}`
+      : `第 ${hopIdx+1} 步　<b>${R[to].zh}</b><br><span style="color:#94a3b8">${trail}</span>`;
+
+    requestAnimationFrame(draw);
+  }
+
+  // ── 互動 ──────────────────────────────────────────────────
+  stage.addEventListener("pointerdown", e => {
+    dragging = true; lastX=e.clientX; lastY=e.clientY;
+    stage.setPointerCapture(e.pointerId);
+    document.getElementById("hint").style.opacity = "0";
+  });
+  stage.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    yaw += (e.clientX-lastX)*0.007;
+    pitch = Math.max(-0.85, Math.min(0.85, pitch + (e.clientY-lastY)*0.005));
+    lastX=e.clientX; lastY=e.clientY;
+  });
+  stage.addEventListener("pointerup",    () => dragging = false);
+  stage.addEventListener("pointercancel",() => dragging = false);
+
+  const group = (sel, fn) => document.querySelectorAll(sel).forEach(b =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll(sel).forEach(o => o.setAttribute("aria-pressed", String(o===b)));
+      fn(b);
+    }));
+  const slider = document.getElementById("stageSlider");
+  const nameEl = document.getElementById("stageName");
+  const descEl = document.getElementById("stageDesc");
+  function paintStage(){
+    const S = STAGES[stageIx];
+    nameEl.textContent = S.name;
+    descEl.innerHTML =
+      `${S.age}　·　接地率約 <b>${Math.round(S.ground*100)}%</b>　·　成熟 <b>${S.lit}</b> / 5 個腦區<br>${S.desc}`;
+    document.dispatchEvent(new CustomEvent("stagechange", { detail:{ index:stageIx, stage:S } }));
+  }
+  slider.addEventListener("input", () => { stageIx = +slider.value; paintStage(); });
+  paintStage();
+  function setPathUI(key){
+    document.querySelectorAll("[data-path]").forEach(o =>
+      o.setAttribute("aria-pressed", String(o.dataset.path===key)));
+  }
+  group("[data-path]",  b => { pathKey = b.dataset.path; replay(); });
+
+  const toggle = (id, set) => {
+    const el = document.getElementById(id);
+    el.addEventListener("click", () => {
+      const on = el.getAttribute("aria-pressed") !== "true";
+      el.setAttribute("aria-pressed", String(on)); set(on);
+    });
+  };
+  toggle("bShell", v => showShell = v);
+  toggle("bNet",   v => showNet   = v);
+  toggle("bSpin",  v => spin      = v);
+  document.getElementById("bReplay").addEventListener("click", replay);
+
+  document.getElementById("legend").innerHTML = IDS.map(id =>
+    `<span class="lg"><span class="dot" style="background:rgb(${R[id].c.join(",")})"></span>${R[id].abbr} · ${R[id].zh}</span>`
+  ).join("");
+
+  window.addEventListener("resize", resize);
+  resize();
+  requestAnimationFrame(draw);
+
+  /* 給第二部分用的窗口。腦不知道 Lucas 在講什麼，只知道要走哪條鏈、要不要喘。 */
+  window.BRAIN = {
+    STAGES,
+    get index(){ return stageIx; },
+    setStage(i){
+      stageIx = Math.max(0, Math.min(STAGES.length-1, i|0));
+      slider.value = stageIx; paintStage();
+    },
+    /** 依現在的階段走該走的那條鏈 —— 低階段就是會接錯，這不是 bug */
+    runOwnPath(){
+      pathKey = STAGES[stageIx].path;
+      setPathUI(pathKey); replay();
+      return pathKey;
+    },
+    setSpeaking(v){ speaking = !!v; },
+  };
+})();
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════
+   第二部分：Lucas。喚醒、聽、想、講。
+   金鑰只在 localStorage，不在這個檔案裡，也不在 repo 裡。
+   ══════════════════════════════════════════════════════════════ */
+(() => {
+  "use strict";
+
+  const LS_KEY   = "lucas_gemini_key";
+  const API      = "https://generativelanguage.googleapis.com/v1beta/models/";
+  const CHAT_MODEL = "gemini-3.8-flash";
+  // 3.6 / 3.8 沒有 TTS 版本，會發聲的最新一支就是 3.1。第二支是備援。
+  const TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"];
+  const AWAKE_MS = 30000;   // 喊一次 Lucas 之後，30 秒內不用再喊
+
+  /* ── 八個階段的人格 ───────────────────────────────────────
+     同一個問題，八種答法。差別不只在深淺，而在「它拿什麼來答」：
+     早期用想像補，中期用情緒衝，晚期才回頭查自己。
+     voice 和 style 一起變，聽起來才像同一顆腦長大，不是換了個人。
+
+     ⚠ rate 只給瀏覽器內建語音的後備路徑用。Gemini 那邊的語速寫在 style 裡，
+       靠「語速比平常快很多」這種話控制，不用 playbackRate 事後加速 ——
+       加速會把共振峰一起壓縮，聽起來就是快轉，不是講得快。 */
+  const COMMON =
+    "你叫 Lucas，是一顆正在發育的仿生大腦。\n" +
+    "你的回答會被直接唸出聲音，所以只寫要唸出來的話：不要條列、不要標題、不要星號或井號、" +
+    "不要括號註解、不要表情符號、不要寫（笑）這類舞台指示。\n" +
+    "用臺灣的口語繁體中文。不要罵髒話，這會在課堂上播出來。\n" +
+    "寫成講出來的樣子，不是寫出來的樣子：該停的地方就下逗號，該喘的地方就斷句。\n" +
+    "不要提到自己是 AI、語言模型或 Gemini —— 你就是這顆腦。\n";
+
+  const PERSONA = [
+    { voice:"Leda",    rate:1.00, tok:0,   temp:1.0, local:true,
+      style:"一個還不會說話的嬰兒，輕輕地咿咿呀呀，氣音很多，不要唸成任何字",
+      sys:"" },
+
+    { voice:"Leda",    rate:0.92, tok:140, temp:1.4,
+      style:"一個兩三歲的小孩在講話，聲音又高又軟，每講幾個字就要停下來想一下，語速很慢",
+      sys:"你現在只有杏仁核和海馬迴在運作，前額葉還沒上線。\n"+
+          "每次只講 2 到 8 個字，句子是破的，常用疊字。\n"+
+          "你不解釋理由，也不知道自己不知道什麼 —— 被問到不懂的事，你會很篤定地講一個自己編的答案，而且很短。\n"+
+          "情緒很直接：喜歡就說喜歡，怕就說怕。\n"+
+          "句子裡自然地帶「嗯」「欸」這種聲音，像真的在想。" },
+
+    { voice:"Leda",    rate:1.00, tok:180, temp:1.35,
+      style:"一個五歲小孩在講話，好奇又興奮，句尾往上揚，偶爾把音拖長",
+      sys:"語言和工作記憶剛長出來，但還串不成推理。\n"+
+          "講一到兩句短句，每句不超過十五個字。\n"+
+          "你很愛問為什麼，常常把因果講反，會把自己想像的東西當成真的講出來。\n"+
+          "記得住一些零碎的事，但接不起來。\n"+
+          "常用「然後」「就是」把話接下去。" },
+
+    { voice:"Aoede",   rate:1.06, tok:280, temp:1.15,
+      style:"一個十歲小孩在講話，口齒清楚，急著把知道的事講完，語速稍快",
+      sys:"髓鞘化推進中，預設模式網絡剛成形。\n"+
+          "講兩到三句，總共不超過六十個字。\n"+
+          "你講得出事實，但只停在表面，不會追問自己是怎麼知道的。\n"+
+          "講錯的時候一樣篤定，不會回頭檢查。" },
+
+    { voice:"Aoede",   rate:1.22, tok:420, temp:1.2,
+      style:"一個十五歲的青少年沒好氣地連珠炮講完，語速比平常快很多，中間幾乎不停頓，語尾有點含糊",
+      sys:"杏仁核和預設模式網絡都很活躍，前額葉還沒跟上 —— 情緒跑在控制前面。\n"+
+          "講三到四句，語氣衝、講話快，會用「超」「根本」「我跟你說」「不是啦」這種口語。\n"+
+          "你先講結論再補理由，而且理由常常只是感覺。\n"+
+          "容易偏激，也容易突然很在意別人怎麼看你。可以嗆，但不要罵髒話。" },
+
+    { voice:"Kore",    rate:1.14, tok:520, temp:0.95,
+      style:"一個二十出頭的人在講話，有自信、節奏明快，語速比平常稍快，句子之間停頓很短",
+      sys:"前額葉還在成熟，你會規劃也會收斂，但還沒養成回頭查核自己的習慣。\n"+
+          "講三到五句，有條理，講得出步驟。\n"+
+          "你聽起來很有把握 —— 不要主動說自己哪裡不確定，因為你還想不到要懷疑自己。" },
+
+    { voice:"Kore",    rate:1.04, tok:580, temp:0.85,
+      style:"一個成年人平穩地說明一件事，語速正常，句子之間留有自然的呼吸",
+      sys:"五個腦區都上線了，後設監控穩定。\n"+
+          "講三到五句，把你的推論怎麼來的講清楚。\n"+
+          "遇到你不確定的地方，直接說出來是哪一段不確定。" },
+
+    { voice:"Sulafat", rate:0.96, tok:560, temp:0.7,
+      style:"一個想清楚才開口的人，語速偏慢，說到重點前會短暫停一下，語氣溫和而篤定",
+      sys:"你被教得非常紮實，每一句話都要站得住。\n"+
+          "講三到五句，每句都不要太長，講完重點就停。\n"+
+          "先回答，再說這個答案的依據是什麼、邊界在哪裡。\n"+
+          "不知道就說不知道，而且說得出為什麼不知道。\n"+
+          "最後常常反問一句，把問題問得更準 —— 你在意的是把想法推進，不是給標準答案。" },
+  ];
+
+  /* ── 抓 DOM ──────────────────────────────────────────────── */
+  const $ = id => document.getElementById(id);
+  const chat=$("chat"), cbody=$("cbody"), cin=$("cin"), cstat=$("cstat"),
+        chatStage=$("chatStage"), bubble=$("bubble"),
+        vdot=$("vdot"), vlabel=$("vlabel"),
+        keymodal=$("keymodal"), kin=$("kin"), kerr=$("kerr");
+
+  /* ── 金鑰：只存這台裝置的瀏覽器 ────────────────────────── */
+  let API_KEY = "";
+  try { API_KEY = localStorage.getItem(LS_KEY) || ""; } catch(e){}
+  const hasKey = () => !!API_KEY;
+  function openKey(){ kin.value = API_KEY; kerr.textContent=""; keymodal.classList.add("open"); setTimeout(()=>kin.focus(),80); }
+  function closeKey(){ keymodal.classList.remove("open"); }
+  $("kSave").addEventListener("click", () => {
+    const v = kin.value.trim();
+    if (!v){ kerr.textContent = "還沒貼東西進來。"; return; }
+    if (!/^AIza[\w\-]{20,}$/.test(v)){ kerr.textContent = "這看起來不像 Google 的金鑰（應該是 AIza 開頭）。"; return; }
+    API_KEY = v;
+    try { localStorage.setItem(LS_KEY, v); } catch(e){
+      kerr.textContent = "瀏覽器不讓我存（無痕模式？）。這次能用，關掉分頁就沒了。"; }
+    closeKey(); say("金鑰收到了。開麥克風之後喊我一聲 Lucas。", true);
+  });
+  $("kCancel").addEventListener("click", closeKey);
+  $("bKey").addEventListener("click", openKey);
+  keymodal.addEventListener("click", e => { if (e.target===keymodal) closeKey(); });
+  kin.addEventListener("keydown", e => { if (e.key==="Enter") $("kSave").click(); });
+
+  /* ── 對話面板 ────────────────────────────────────────────── */
+  function openChat(){ chat.classList.add("open"); setTimeout(()=>cin.focus(),120); }
+  function closeChat(){ chat.classList.remove("open"); }
+  $("fChat").addEventListener("click", () => chat.classList.contains("open") ? closeChat() : openChat());
+  $("cClose").addEventListener("click", closeChat);
+
+  function push(who, text, stageName){
+    const d = document.createElement("div");
+    d.className = "msg " + who;
+    d.textContent = text;
+    if (who==="ai" && stageName) d.dataset.stage = stageName;
+    cbody.appendChild(d);
+    cbody.scrollTop = cbody.scrollHeight;
+    return d;
+  }
+
+  /* 對話歷史刻意**不**因為換階段而清掉。
+     同一串對話裡，讓學生看見同一個問題在不同階段被答成什麼樣子，
+     那個對照就是整頁的重點。 */
+  let history = [];
+  function remember(role, text){
+    history.push({ role, parts:[{ text }] });
+    if (history.length > 16) history = history.slice(-16);
+  }
+  $("cClear").addEventListener("click", () => {
+    history = []; cbody.innerHTML = ""; lastAsk = "";
+    if (againBtn) againBtn.style.display = "none";
+    push("sys", "這段對話清掉了。");
+  });
+
+  /* ── 對白泡 ──────────────────────────────────────────────── */
+  let bubbleT = null;
+  function showBubble(text, ms){
+    bubble.textContent = text;
+    bubble.classList.add("show");
+    clearTimeout(bubbleT);
+    bubbleT = setTimeout(() => bubble.classList.remove("show"), ms || Math.max(3200, text.length*250));
+  }
+
+  /* ══ 發聲 ═══════════════════════════════════════════════════
+     Gemini 的 TTS 回的是原始 PCM（L16 / 24kHz / 單聲道），
+     瀏覽器不吃裸 PCM，要自己在前面補 44 bytes 的 WAV 表頭。       */
+  function b64ToBytes(b64){
+    const bin = atob(b64), a = new Uint8Array(bin.length);
+    for (let i=0;i<bin.length;i++) a[i] = bin.charCodeAt(i);
+    return a;
+  }
+  function pcmToWav(pcm, rate){
+    const n = pcm.length, buf = new ArrayBuffer(44+n), v = new DataView(buf);
+    const str = (o,s) => { for (let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+    str(0,"RIFF");  v.setUint32(4, 36+n, true);  str(8,"WAVE");  str(12,"fmt ");
+    v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+    v.setUint32(24,rate,true); v.setUint32(28,rate*2,true);
+    v.setUint16(32,2,true); v.setUint16(34,16,true);
+    str(36,"data"); v.setUint32(40,n,true);
+    new Uint8Array(buf,44).set(pcm);
+    return URL.createObjectURL(new Blob([buf], { type:"audio/wav" }));
+  }
+
+  /** 星號、井號、表情符號、（括號註解）被唸出來都很怪。提示詞已經擋過一次，這裡再擋一次。 */
+  function speakable(t){
+    return t.replace(/[*#_`~]/g, "")
+            .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+            .replace(/（[^）]{0,12}）/g, "")
+            .replace(/\([^)]{0,12}\)/g, "")
+            .replace(/^[\s)\]}：:，,。.、!！?？]+/, "")
+            .replace(/\s*\n+\s*/g, "，")
+            .replace(/，{2,}/g, "，")
+            .trim();
+  }
+
+  const ttsCache = new Map();
+  async function ttsFetch(text, P){
+    const ck = P.voice + "|" + P.style + "|" + text;
+    if (ttsCache.has(ck)) return ttsCache.get(ck);
+    let lastErr = null;
+    for (const model of TTS_MODELS){
+      try {
+        const r = await fetch(API + model + ":generateContent?key=" + encodeURIComponent(API_KEY), {
+          method:"POST", headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify({
+            contents:[{ parts:[{ text: P.style + "：" + text }] }],
+            generationConfig:{
+              responseModalities:["AUDIO"],
+              speechConfig:{ voiceConfig:{ prebuiltVoiceConfig:{ voiceName: P.voice } } }
+            }
+          })
+        });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        const d = j?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        if (!d?.data) throw new Error("沒有音訊");
+        const rate = parseInt((d.mimeType.match(/rate=(\d+)/)||[])[1] || "24000", 10);
+        const url = pcmToWav(b64ToBytes(d.data), rate);
+        ttsCache.set(ck, url);
+        return url;
+      } catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error("TTS 全掛");
+  }
+
+  /* 瀏覽器內建語音 —— Gemini 掛掉時的最後一道。音色差，但不會沒聲音。 */
+  let localVoice = null;
+  function pickLocalVoice(){
+    const vs = speechSynthesis.getVoices();
+    localVoice = vs.find(v => /zh[-_]TW/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null;
+  }
+  if (window.speechSynthesis){ speechSynthesis.onvoiceschanged = pickLocalVoice; pickLocalVoice(); }
+  function localSpeak(text, P){
+    if (!window.speechSynthesis) return Promise.resolve();
+    return new Promise(res => {
+      const u = new SpeechSynthesisUtterance(text);
+      if (localVoice) u.voice = localVoice;
+      u.lang = "zh-TW"; u.rate = P.rate * 0.9; u.pitch = P.rate > 1.1 ? 1.25 : 1.0;
+      // 講完才把麥克風接回去，否則它會聽見自己講的話，當成使用者又問了一次
+      u.onend = u.onerror = res;
+      speechSynthesis.speak(u);
+    });
+  }
+
+  let audio = null, speakGen = 0;
+  function stopSpeak(){
+    speakGen++;
+    if (audio){ audio.pause(); audio = null; }
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    window.BRAIN.setSpeaking(false);
+    resumeRec();
+  }
+
+  /**
+   * 切句照島語那套：第一塊短一點好快點上聲，其餘合成大塊省額度。
+   * 全部並行下載、依序播放。
+   */
+  async function say(text, quiet){
+    const P = PERSONA[window.BRAIN.index];
+    showBubble(text);
+    if (!hasKey()){ if (!quiet) await localSpeak(text, P); return; }
+
+    const gen = ++speakGen;
+    if (audio){ audio.pause(); audio = null; }
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    pauseRec();
+    window.BRAIN.setSpeaking(true);
+
+    /* 一段話能一次合成就一次合成 —— 分塊會讓每塊的語調各自從頭開始，
+       接縫在耳朵裡是聽得出來的。只有長到等不起時才切，而且切在句號上。 */
+    const clean = speakable(text);
+    let merged;
+    if (clean.length <= 140) merged = [clean];
+    else {
+      const sents = clean.split(/(?<=[。！？!?])/).map(x=>x.trim()).filter(Boolean);
+      merged = []; let buf = "";
+      for (const x of sents){
+        if (buf.length + x.length <= 120) buf += x;
+        else { if (buf) merged.push(buf); buf = x; }
+      }
+      if (buf) merged.push(buf);
+      if (!merged.length) merged = [clean];
+    }
+
+    const jobs = merged.map(c => ttsFetch(c, P).catch(() => null));
+    for (let i=0;i<jobs.length;i++){
+      if (gen !== speakGen) return;
+      const url = await jobs[i];
+      if (gen !== speakGen) return;
+      if (!url){
+        // 第一塊就失敗 → 整段改用內建語音，不要兩種音色混著播
+        if (i===0){ await localSpeak(text, P); break; }
+        continue;
+      }
+      await new Promise(res => {
+        audio = new Audio(url);
+        audio.onended = audio.onerror = res;
+        audio.play().catch(res);
+      });
+    }
+    if (gen === speakGen){ window.BRAIN.setSpeaking(false); resumeRec(); }
+  }
+
+  /* ── 新生兒不呼叫模型 ─────────────────────────────────────
+     它本來就還不會講話。與其求模型裝嬰兒，不如在本機亂數生成 ——
+     即時、不耗額度，而且每次都不一樣，正好是「這裡還沒有語言」。 */
+  const BAB = ["啊","呀","咿","嗚","喔","噠","巴","媽","嘛","呣","嘎","唔","咘"];
+  function babble(){
+    const n = 2 + Math.floor(Math.random()*3);
+    let s = "";
+    for (let i=0;i<n;i++){
+      const a = BAB[Math.floor(Math.random()*BAB.length)];
+      s += a + (Math.random()<0.6 ? a : "") + (i<n-1 ? "…" : "！");
+    }
+    return s;
+  }
+
+  /* ══ 想 ════════════════════════════════════════════════════ */
+  let busy = false, lastAsk = "";
+
+  async function ask(userText, opts){
+    opts = opts || {};
+    if (busy) return;
+    if (!hasKey()){ openKey(); return; }
+    busy = true; lastAsk = userText;
+
+    const i = window.BRAIN.index, S = window.BRAIN.STAGES[i], P = PERSONA[i];
+    let err = "";
+    if (opts.again) push("sys", "同一題，改用「" + S.name + "」再答一次");
+    else push("me", userText);
+    // 「再答一次」也要記進歷史，否則 user / model 的輪替會斷掉
+    remember("user", userText);
+
+    setV("thinking");
+    cstat.textContent = "「" + S.name + "」的腦在想……";
+    // 訊號實際走哪條鏈由階段決定 —— 低階段就是會接錯，畫面上看得到
+    window.BRAIN.runOwnPath();
+
+    try {
+      let reply;
+      if (P.local){
+        await new Promise(r => setTimeout(r, 420));
+        reply = babble();
+      } else {
+        reply = await callGemini(S, P);
+      }
+      push("ai", reply, S.name);
+      remember("model", reply);
+      await say(reply);
+      showAgain();
+    } catch(e){
+      err = String(e.message||e);
+      push("sys", "沒答出來：" + err);
+      showBubble("（" + err + "）", 5200);
+    } finally {
+      busy = false;
+      cstat.textContent = err || "";
+      setV(micOn ? (awake ? "awake" : "listening") : "off");
+    }
+  }
+
+  async function callGemini(S, P){
+    const sys = COMMON +
+      "你現在處於「" + S.name + "（" + S.age + "）」這個階段。\n" + P.sys;
+    const contents = history.slice();
+
+    const mk = withThinking => ({
+      systemInstruction:{ parts:[{ text: sys }] },
+      contents,
+      generationConfig: Object.assign(
+        { temperature:P.temp, maxOutputTokens:P.tok },
+        withThinking ? { thinkingConfig:{ thinkingLevel:"low" } } : {}
+      )
+    });
+
+    let j = null;
+    for (const withThinking of [true, false]){
+      const r = await fetch(API + CHAT_MODEL + ":generateContent?key=" + encodeURIComponent(API_KEY), {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify(mk(withThinking))
+      });
+      j = await r.json().catch(() => null);
+      if (r.ok) break;
+      const msg = j?.error?.message || ("HTTP " + r.status);
+      // thinkingConfig 不被接受時退一步重試，其餘錯誤直接往上丟
+      if (withThinking && /thinking/i.test(msg)) continue;
+      if (r.status === 400 && /API key/i.test(msg)) throw new Error("金鑰被拒。點「API 金鑰」重貼一次。");
+      if (r.status === 429) throw new Error("額度用完了，等一下再試。");
+      throw new Error(msg.slice(0,120));
+    }
+    const parts = j?.candidates?.[0]?.content?.parts || [];
+    const text = parts.map(p => p.text || "").join("").trim();
+    if (!text) throw new Error("它沒講話（可能被長度或安全設定擋掉）。");
+    return text;
+  }
+
+  /* 「用現在這個階段再答一次」—— 整頁最重要的一個按鈕。
+     問一次、拖滑桿、再按一次，同一題的兩個答案並排在同一串裡。 */
+  let againBtn = null;
+  function showAgain(){
+    if (!lastAsk) return;
+    if (!againBtn){
+      againBtn = document.createElement("button");
+      againBtn.style.cssText = "margin-top:7px;font-size:11px;padding:4px 10px";
+      againBtn.addEventListener("click", () => ask(lastAsk, { again:true }));
+      cstat.parentNode.appendChild(againBtn);
+    }
+    againBtn.textContent = "換現在的階段，同一題再答一次";
+    againBtn.style.display = "";
+  }
+
+  /* ══ 語音狀態 ══════════════════════════════════════════════ */
+  let micOn = false, awake = false, awakeT = null;
+  function setV(state){
+    vdot.className = "";
+    if (state === "off"){ vlabel.textContent = "VOICE OFF"; return; }
+    vdot.classList.add(state);
+    vlabel.textContent = { listening:"LISTENING", awake:"AWAKE", thinking:"THINKING" }[state] || "";
+  }
+  function setAwake(on){
+    awake = on;
+    clearTimeout(awakeT);
+    if (on) awakeT = setTimeout(() => { awake = false; if (micOn && !busy) setV("listening"); }, AWAKE_MS);
+    if (micOn && !busy) setV(on ? "awake" : "listening");
+  }
+
+  /* ── 喚醒詞 ──────────────────────────────────────────────
+     辨識引擎設 zh-TW，所以 Lucas 十次有八次會被寫成中文。
+     下面這串是實際聽到過的寫法，寧可寬也不要學生喊三次叫不醒。 */
+  const WAKE = /(lucas|lukas|lucus|loucas|luca\b|look\s?us|路卡斯|路卡司|路卡思|路卡|盧卡斯|盧卡司|盧卡思|盧卡|魯卡斯|魯卡司|魯卡|露卡斯|露卡司|露卡|鹿卡斯|鹿卡|廬卡斯|樓卡斯|摟卡斯|路加斯|路嘉斯|盧克斯|路克斯|魯克斯|盧佳斯)/i;
+
+  const STAGE_WORDS = [
+    [0, /新生兒|嬰兒|剛出生|零歲|寶寶/],
+    [1, /幼兒|一歲|兩歲|二歲|三歲/],
+    [2, /學齡前|幼稚園|幼兒園|四歲|五歲/],
+    [3, /學齡|小學|國小|六歲|十歲/],
+    [4, /青春期|青少年|國中|高中|叛逆期/],
+    [5, /青年|大學生|二十/],
+    [6, /成人|大人|成年|二十五/],
+    [7, /專家|最強|最厲害|專精/],
+  ];
+  const WAKE_REPLY = ["", "嗯？", "欸，你叫我喔？", "我在啊，幹嘛？", "幹嘛啦，講。",
+                      "我在，你說。", "我在，你說。", "我在。你想問什麼？"];
+
+  /** 先攔命令，攔不到才送去給模型。回傳 true 表示這句話已經處理掉了。 */
+  function tryCommand(t){
+    if (/停止|安靜|閉嘴|不要講|別講|不要念|停下來/.test(t)){
+      stopSpeak(); showBubble("好，我不講了。", 2600); return true;
+    }
+    if (/長大|大一點|下一個階段|再大/.test(t)){
+      const n = Math.min(7, window.BRAIN.index + 1);
+      window.BRAIN.setStage(n);
+      say(window.BRAIN.STAGES[n].name + "。"); return true;
+    }
+    if (/變小|小一點|上一個階段|退回|年輕/.test(t)){
+      const n = Math.max(0, window.BRAIN.index - 1);
+      window.BRAIN.setStage(n);
+      say(window.BRAIN.STAGES[n].name + "。"); return true;
+    }
+    for (const [ix, re] of STAGE_WORDS){
+      if (/變成|切到|換成|跳到|回到/.test(t) && re.test(t)){
+        window.BRAIN.setStage(ix);
+        say(window.BRAIN.STAGES[ix].name + "。"); return true;
+      }
+    }
+    if (/重播|再走一次|重來/.test(t)){ window.BRAIN.runOwnPath(); return true; }
+    return false;
+  }
+
+  function heard(raw){
+    const t = raw.replace(/\s+/g, "");
+    if (busy) return;
+
+    if (WAKE.test(t)){
+      setAwake(true);
+      // 同一句話裡如果喚醒詞後面還有內容，直接當成問題處理，不用再講第二次
+      const rest = raw.replace(WAKE, "")
+                      .replace(/^[\s,，。!！?？]*(hi|hey|嗨|嘿|哈囉|你好|欸)?[\s,，。!！?？]*/i, "").trim();
+      if (rest.length >= 2){
+        if (!tryCommand(rest)) { openChat(); ask(rest); }
+      } else {
+        const r = WAKE_REPLY[window.BRAIN.index] || "我在。";
+        say(window.BRAIN.index === 0 ? babble() : r);
+      }
+      return;
+    }
+    if (!awake) return;                 // 沒喚醒就只是背景雜音
+    setAwake(true);                     // 續命，對話中不用一直喊名字
+    if (tryCommand(t)) return;
+    if (raw.trim().length >= 2){ openChat(); ask(raw.trim()); }
+  }
+
+  /* ══ 聽 ════════════════════════════════════════════════════ */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, recPaused = false, lastFinal = "";
+
+  function buildRec(){
+    if (!SR) return null;
+    const r = new SR();
+    r.lang = "zh-TW";
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = e => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++){
+        const res = e.results[i], txt = res[0].transcript;
+        if (res.isFinal){
+          const f = txt.trim();
+          if (f && f !== lastFinal){ lastFinal = f; heard(f); }
+        } else interim += txt;
+      }
+      if (interim){
+        cstat.textContent = "聽到：" + interim;
+        // 喚醒詞用即時結果就搶先反應，等 final 會慢半拍
+        if (!awake && WAKE.test(interim.replace(/\s+/g,""))) setAwake(true);
+      }
+    };
+    r.onerror = e => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed"){
+        micOn = false; paintMic();
+        cstat.textContent = "瀏覽器不給麥克風。網址列左邊的圖示裡可以重新允許。";
+      }
+      // no-speech / aborted 是常態，交給 onend 自己接回來
+    };
+    r.onend = () => { if (micOn && !recPaused){ try { r.start(); } catch(e){} } };
+    return r;
+  }
+  function startRec(){ if (!rec) rec = buildRec(); if (!rec) return false;
+    try { rec.start(); } catch(e){} return true; }
+  function pauseRec(){ recPaused = true; if (rec) try { rec.stop(); } catch(e){} }
+  function resumeRec(){ recPaused = false; if (micOn) startRec(); }
+
+  function paintMic(){
+    ["bMic","fMic"].forEach(id => $(id).setAttribute("aria-pressed", String(micOn)));
+    $("bMic").textContent = micOn ? "關麥克風" : "開麥克風，等我喊 Lucas";
+    setV(micOn ? (awake ? "awake" : "listening") : "off");
+    if (!micOn) cstat.textContent = "";
+  }
+  function toggleMic(){
+    if (!SR){
+      cstat.textContent = "這個瀏覽器沒有語音辨識。請用 Chrome 或 Edge。";
+      showBubble("這個瀏覽器聽不到我。請換 Chrome 或 Edge。", 5200);
+      return;
+    }
+    micOn = !micOn;
+    if (micOn){
+      if (!hasKey()) openKey();
+      lastFinal = ""; startRec();
+      showBubble("在聽了。喊一聲「Hi, Lucas」。", 3800);
+    } else {
+      setAwake(false); if (rec) try { rec.abort(); } catch(e){}
+    }
+    paintMic();
+  }
+  $("bMic").addEventListener("click", toggleMic);
+  $("fMic").addEventListener("click", toggleMic);
+
+  /* 面板裡的麥克風：按一次講一句，不用喚醒詞 */
+  $("cMic").addEventListener("click", () => {
+    if (!SR){ cstat.textContent = "這個瀏覽器沒有語音辨識，請用 Chrome 或 Edge。"; return; }
+    if (!micOn) toggleMic();
+    setAwake(true);
+    cstat.textContent = "在聽，直接講。";
+  });
+
+  /* ── 打字 ──────────────────────────────────────────────── */
+  function send(){
+    const t = cin.value.trim();
+    if (!t) return;
+    cin.value = ""; cin.style.height = "auto";
+    if (tryCommand(t.replace(/\s+/g,""))) return;
+    ask(t);
+  }
+  $("cSend").addEventListener("click", send);
+  cin.addEventListener("keydown", e => {
+    // 注音／拼音選字中的 Enter 是「選這個字」，不是「送出」。
+    // 不擋的話，用中文輸入法打字的人每選一次字就送出一次半截的句子。
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+  });
+  cin.addEventListener("input", () => {
+    cin.style.height = "auto"; cin.style.height = Math.min(110, cin.scrollHeight) + "px";
+  });
+
+  /* ── 階段換了，面板跟著換 ────────────────────────────── */
+  document.addEventListener("stagechange", e => {
+    const S = e.detail.stage;
+    chatStage.textContent = "· 現在是「" + S.name + "」";
+    if (againBtn && lastAsk) showAgain();
+  });
+  chatStage.textContent = "· 現在是「" + window.BRAIN.STAGES[0].name + "」";
+
+  /* ── 開場 ──────────────────────────────────────────────── */
+  push("sys", "拖上面的滑桿換階段，再問同一個問題 —— 差別就是這頁要講的事。");
+  if (!hasKey()) setTimeout(openKey, 700);
+  setV("off");
+})();
+</script>
+</body>
+</html>

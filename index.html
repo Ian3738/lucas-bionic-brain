@@ -45,6 +45,12 @@
   }
   .step b{color:#fff;font-weight:600}
   .hint{position:absolute;left:14px;bottom:10px;font-size:11px;color:#5b6472;pointer-events:none}
+  /* 講話期間辨識器是停的，用講的打不斷它 —— 所以一定要有一顆按得到的停止鍵 */
+  #bStop{position:absolute;right:13px;bottom:12px;display:none;align-items:center;gap:6px;
+    font-size:12px;padding:6px 14px;border-radius:999px;border:1px solid rgba(239,68,96,.55);
+    background:rgba(239,68,96,.16);color:#ffd9df;backdrop-filter:blur(6px)}
+  #bStop.on{display:inline-flex}
+  #bStop:hover{background:rgba(239,68,96,.3);border-color:#ef4460}
 
   /* ── 語音狀態燈：右上角，照島語的三態 ─────────────────── */
   .vstat{position:absolute;right:13px;top:12px;display:flex;align-items:center;gap:7px;
@@ -162,6 +168,7 @@
     <div class="vstat"><span id="vdot"></span><span id="vlabel">VOICE OFF</span></div>
     <div class="hint" id="hint">拖曳旋轉</div>
     <div id="bubble" data-who="LUCAS"></div>
+    <button id="bStop" title="停止（Esc）">■ 停</button>
   </div>
 
   <div class="panel">
@@ -757,10 +764,31 @@
   const hasKey = () => !!API_KEY;
   function openKey(){ kin.value = API_KEY; kerr.textContent=""; keymodal.classList.add("open"); setTimeout(()=>kin.focus(),80); }
   function closeKey(){ keymodal.classList.remove("open"); }
-  $("kSave").addEventListener("click", () => {
+  $("kSave").addEventListener("click", async () => {
     const v = kin.value.trim();
     if (!v){ kerr.textContent = "還沒貼東西進來。"; return; }
     if (!/^AIza[\w\-]{20,}$/.test(v)){ kerr.textContent = "這看起來不像 Google 的金鑰（應該是 AIza 開頭）。"; return; }
+    /* 真的打一次再說收到 —— 只驗格式的話，貼錯的金鑰要等到上課喊 Lucas
+       才發現，而那時畫面只會說「沒答出來」，老師不會知道是金鑰的問題。 */
+    kerr.textContent = "確認中……";
+    try {
+      const r = await fetch(API + CHAT_MODEL + ":generateContent?key=" + encodeURIComponent(v), {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ contents:[{ parts:[{ text:"hi" }] }],
+                               generationConfig:{ maxOutputTokens:1, thinkingConfig:{ thinkingBudget:0 } } })
+      });
+      if (!r.ok){
+        const j = await r.json().catch(() => null);
+        const m = j?.error?.message || ("HTTP " + r.status);
+        kerr.textContent = r.status === 429 ? "金鑰是對的，但額度已經用完了。"
+                         : /API_KEY|API key/i.test(m) ? "這把金鑰 Google 不認。確認是從 AI Studio 複製的。"
+                         : m.slice(0, 90);
+        if (r.status !== 429) return;
+      }
+    } catch(e){
+      kerr.textContent = "連不上 Google，先檢查網路。";
+      return;
+    }
     API_KEY = v;
     try { localStorage.setItem(LS_KEY, v); } catch(e){
       kerr.textContent = "瀏覽器不讓我存（無痕模式？）。這次能用，關掉分頁就沒了。"; }
@@ -951,6 +979,11 @@
           }
         }
         curReader = null; curAbort = null;
+        /* ⚠ 被打斷的串流是從這裡出去的，不是從 catch。
+           stopNodes() 先呼叫 reader.cancel()，而 cancel() 會讓等待中的 read()
+           以 done:true「正常」結束 —— 所以這裡一定要再檢查一次世代，
+           否則只收到一半的音訊會被寫進快取，那句話從此整堂課都只唸半截。 */
+        if (gen !== speakGen) return;
         if (!got) throw new Error("沒有音訊");
         // 只快取短句（喚醒回應那種），長段落擺著佔記憶體不划算
         if (text.length <= 24) ttsCache.set(ck, concatBytes(chunks));
@@ -958,18 +991,48 @@
       } catch(e){
         curReader = null; curAbort = null;
         if (gen !== speakGen) return;
-        // 已經播出去的不能重來，否則換模型重試會把同一句話唸兩次
-        if (got > 0) return waitTail();
+        // 已經播出去的不能重來，否則換模型重試會把同一句話唸兩次；
+        // 但要講一聲，不然使用者只覺得它講到一半自己吞回去
+        if (got > 0){ showBubble("（聲音斷在中間了）", 3000, "LUCAS"); return waitTail(); }
         lastErr = e;
       }
     }
     throw lastErr || new Error("TTS 全掛");
   }
 
+  /* 瀏覽器內建語音 —— Gemini 掛掉時的最後一道。音色差，但不會沒聲音。
+     ⚠ 這段在改串流那一版被誤刪過，而 say() 裡有兩個呼叫點 —— 結果 TTS 一失敗就
+       ReferenceError，收尾跑不到，麥克風永久聾掉。node --check 抓不到這種錯。 */
+  let localVoice = null;
+  function pickLocalVoice(){
+    const vs = speechSynthesis.getVoices();
+    localVoice = vs.find(v => /zh[-_]TW/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null;
+  }
+  if (window.speechSynthesis){ speechSynthesis.onvoiceschanged = pickLocalVoice; pickLocalVoice(); }
+  function localSpeak(text, P){
+    if (!window.speechSynthesis) return Promise.resolve();
+    return new Promise(res => {
+      let done = false;
+      const fin = () => { if (!done){ done = true; res(); } };
+      const u = new SpeechSynthesisUtterance(text);
+      if (localVoice) u.voice = localVoice;
+      u.lang = "zh-TW"; u.rate = P.rate * 0.9; u.pitch = P.rate > 1.1 ? 1.25 : 1.0;
+      u.onend = u.onerror = fin;
+      // 有些 Chrome 版本不會觸發 onend。沒有這道保險的話，say() 會永遠卡在
+      // recPaused = true，麥克風就再也接不回來。
+      setTimeout(fin, Math.max(4000, text.length * 320));
+      speechSynthesis.speak(u);
+    });
+  }
+
   let speakGen = 0;
+  /** 打斷旗標：ask() 在真的開口前會回頭看一眼，不然「想的時候喊停」會被之後的 say() 抵銷 */
+  let stopAsked = false;
   function stopSpeak(){
     speakGen++;
+    stopAsked = true;
     stopNodes();
+    if (chatAbort){ try { chatAbort.abort(); } catch(e){} chatAbort = null; }
     if (window.speechSynthesis) speechSynthesis.cancel();
     window.BRAIN.setSpeaking(false);
     resumeRec();
@@ -979,9 +1042,13 @@
    * 一段話＝一次合成，不切塊。
    * 串流之後沒有理由再切 —— 切塊是為了讓第一個音早點出來，而串流本來就
    * 第一塊就出聲；切了反而讓每塊的語調各自從頭開始，接縫聽得出來。
+   *
+   * ⚠ persona 一定要由呼叫端傳進來，不能在這裡讀 BRAIN.index。
+   *   模型在想的時候老師如果拖了滑桿，這裡讀到的會是新階段 ——
+   *   專家的答案用嬰兒的嗓音唸出來，而那正是上課時最常做的動作。
    */
-  async function say(text, quiet){
-    const P = PERSONA[window.BRAIN.index];
+  async function say(text, quiet, persona){
+    const P = persona || PERSONA[window.BRAIN.index];
     showBubble(text);
     if (!hasKey()){ if (!quiet) await localSpeak(text, P); return; }
 
@@ -994,9 +1061,21 @@
     try {
       await streamSpeak(speakable(text), P, gen);
     } catch(e){
-      if (gen === speakGen) await localSpeak(text, P);   // Gemini 掛了還是要有聲音
+      if (gen === speakGen){
+        showBubble(text);                      // 錯誤泡泡不要把答案本身蓋掉
+        await localSpeak(text, P);             // Gemini 掛了還是要有聲音
+      }
+    } finally {
+      /* 收尾一定要在 finally。守衛要留著：世代不同表示 stopSpeak() 或新的 say()
+         已經接手，這時候 resumeRec() 會在它正在講話的時候打開麥克風，它會聽見自己。 */
+      if (gen === speakGen){
+        window.BRAIN.setSpeaking(false);
+        resumeRec();
+        // 30 秒要從講完開始算。從聽到問題就開始算的話，後期階段光是唸完就過期了，
+        // 老師接著追問會被當成沒喚醒而無聲丟掉。
+        if (micOn && awake) setAwake(true);
+      }
     }
-    if (gen === speakGen){ window.BRAIN.setSpeaking(false); resumeRec(); }
   }
 
   /* ── 新生兒不呼叫模型 ─────────────────────────────────────
@@ -1015,17 +1094,25 @@
 
   /* ══ 想 ════════════════════════════════════════════════════ */
   let busy = false, lastAsk = "";
+  const stopBtn = $("bStop");
+  function showStop(on){ stopBtn.classList.toggle("on", !!on); }
+  stopBtn.addEventListener("click", () => { stopSpeak(); showBubble("好，我不講了。", 2600); showStop(false); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && stopBtn.classList.contains("on")){
+      stopSpeak(); showBubble("好，我不講了。", 2600); showStop(false);
+    }
+  });
 
   async function ask(userText, opts){
     opts = opts || {};
     if (busy){
       // 以前這裡直接 return，使用者看不出自己的話被丟掉了
-      cstat.textContent = "它還在講上一題。說「停」可以打斷它。";
-      showBubble("（它還在講上一題 —— 說「停」打斷它）", 3200, "LUCAS");
+      cstat.textContent = "它還在講上一題。按畫面右下角的「停」可以打斷。";
+      showBubble("（它還在講上一題 —— 按右下角的「停」）", 3200, "LUCAS");
       return;
     }
     if (!hasKey()){ openKey(); return; }
-    busy = true; lastAsk = userText;
+    busy = true; lastAsk = userText; stopAsked = false; showStop(true);
 
     const i = window.BRAIN.index, S = window.BRAIN.STAGES[i], P = PERSONA[i];
     let err = "", aiNode = null;
@@ -1054,17 +1141,25 @@
         });
         aiNode.textContent = reply;
       }
+      // 「想」的時候被喊停 → 到這裡就收手，不要再開口
+      if (stopAsked){ push("sys", "（喊停了，這題沒有唸出來）"); return; }
       remember("model", reply);
-      await say(reply);
+      await say(reply, false, P);   // 用提問當下的 persona，不是滑桿現在指的那個
       showAgain();
     } catch(e){
       err = String(e.message||e);
       // 串流中途掛掉時，把還沒填到字的空泡泡收掉，不要留一個「…」在那裡
-      if (aiNode && aiNode.textContent.trim() === "…") aiNode.remove();
+      if (aiNode){
+        const partial = aiNode.textContent.trim();
+        if (partial === "…" || !partial) aiNode.remove();
+        else aiNode.textContent = partial + "⋯（斷在這裡）";   // 半截答案要看得出來是半截
+      }
+      // 沒答出來的那一題不要留在歷史裡，否則下一輪會看到一個沒有回應的 user 回合
+      if (history.length && history[history.length-1].role === "user") history.pop();
       push("sys", "沒答出來：" + err);
       showBubble("（" + err + "）", 5200);
     } finally {
-      busy = false;
+      busy = false; showStop(false);
       cstat.textContent = err || "";
       setV(micOn ? (awake ? "awake" : "listening") : "off");
     }
@@ -1075,6 +1170,7 @@
    * 目的是讓字**邊來邊出現在畫面上**：使用者在 1.4 秒就看到它開始講話，
    * 而不是盯著一顆點等到 3 秒後才一次跳出整段。感知上的差別比秒數大。
    */
+  let chatAbort = null;
   async function callGemini(S, P, onDelta){
     const sys = COMMON +
       "你現在處於「" + S.name + "（" + S.age + "）」這個階段。\n" + P.sys;
@@ -1095,9 +1191,11 @@
 
     let lastErr = null;
     for (const cfg of CFGS){
+      const ctl = new AbortController(); chatAbort = ctl;
       const r = await fetch(
         API + CHAT_MODEL + ":streamGenerateContent?alt=sse&key=" + encodeURIComponent(API_KEY),
-        { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(mk(cfg)) });
+        { method:"POST", headers:{ "Content-Type":"application/json" },
+          body: JSON.stringify(mk(cfg)), signal: ctl.signal });
 
       if (!r.ok){
         const j = await r.json().catch(() => null);
@@ -1110,29 +1208,43 @@
       if (!r.body) throw new Error("這個瀏覽器不支援串流讀取。");
 
       const reader = r.body.getReader(), dec = new TextDecoder();
-      let buf = "", text = "";
+      let buf = "", text = "", cut = "";
       for (;;){
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream:true });
         let nl;
         while ((nl = buf.indexOf("\n")) >= 0){
-          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          // \r\n 的行尾也要吃掉，不然 JSON.parse 會整行失敗
+          const line = buf.slice(0, nl).replace(/\r$/, ""); buf = buf.slice(nl + 1);
           if (!line.startsWith("data:")) continue;
           const pl = line.slice(5).trim();
-          if (!pl) continue;
+          if (!pl || pl === "[DONE]") continue;
           let j; try { j = JSON.parse(pl); } catch(e){ continue; }
-          for (const part of (j?.candidates?.[0]?.content?.parts || [])){
+          /* ⚠ 串流中途是會送 error frame 的，而 HTTP 狀態早就 200 了。
+             不看這個的話，半段答案會被當成完整答案唸出來、還寫進對話歷史。 */
+          if (j?.error){ cut = j.error.message || "串流中斷"; break; }
+          const cand = j?.candidates?.[0];
+          for (const part of (cand?.content?.parts || [])){
             if (typeof part.text === "string" && part.text){
               text += part.text;
               if (onDelta) onDelta(text);
             }
           }
+          const fr = cand?.finishReason;
+          if (fr && fr !== "STOP"){ cut = fr; }
         }
+        if (cut) break;
       }
+      chatAbort = null;
       const out = text.trim();
-      if (out) return out;
-      lastErr = new Error("它沒講話（可能被長度或安全設定擋掉）。");
+      if (out){
+        if (cut) throw Object.assign(new Error("話沒講完（" + cut + "）"), { partial: out });
+        return out;
+      }
+      /* 空回覆不要換設定重試 —— 第二組是 thinkingLevel:"low"，正是會漏思考內容的那組。
+         只有「伺服器明講不收 thinkingBudget」才輪得到它，那是上面 !r.ok 那條路。 */
+      throw new Error("它沒講話（可能被長度或安全設定擋掉）。");
     }
     throw lastErr || new Error("沒有回應");
   }
@@ -1185,14 +1297,15 @@
   const WAKE_REPLY = ["", "嗯？", "欸，你叫我喔？", "我在啊，幹嘛？", "幹嘛啦，講。",
                       "我在，你說。", "我在，你說。", "我在。你想問什麼？"];
 
+  /* 打斷。短促的「停」「夠了」要整句比對才收 —— 直接把「停」丟進上面那串的話，
+     「為什麼心臟會停」也會被當成打斷指令。 */
+  const STOP_RE = /停止|安靜|閉嘴|不要講|別講|不要念|不要唸|停下來|別念了|不要說了|先停/;
+  const STOP_ONE = /^(停|停停|噓|夠了|好了啦|等等|等一下)$/;
+  function isStop(t){ return STOP_RE.test(t) || STOP_ONE.test(t); }
+
   /** 先攔命令，攔不到才送去給模型。回傳 true 表示這句話已經處理掉了。 */
   function tryCommand(t){
-    /* 打斷。短促的「停」「夠了」要整句比對才收 —— 直接把「停」丟進上面那串的話，
-       「為什麼心臟會停」也會被當成打斷指令。 */
-    if (/停止|安靜|閉嘴|不要講|別講|不要念|不要唸|停下來|別念了|不要說了|先停/.test(t)
-        || /^(停|停停|噓|夠了|好了啦|等等|等一下)$/.test(t)){
-      stopSpeak(); showBubble("好，我不講了。", 2600); return true;
-    }
+    if (isStop(t)){ stopSpeak(); showBubble("好，我不講了。", 2600); return true; }
     if (/長大|大一點|下一個階段|再大/.test(t)){
       const n = Math.min(7, window.BRAIN.index + 1);
       window.BRAIN.setStage(n);
@@ -1215,7 +1328,10 @@
 
   function heard(raw){
     const t = raw.replace(/\s+/g, "");
-    if (busy) return;
+    /* 忙碌中只放行「打斷」。其餘照舊擋掉 —— 但要注意：真正在發聲的那段期間
+       辨識器被 pauseRec() 停著，這條路根本收不到聲音，所以畫布上那顆停止鍵
+       才是打斷的主要手段，這裡只涵蓋「還在想」的那幾秒。 */
+    if (busy){ if (isStop(t)) tryCommand(t); return; }
 
     if (WAKE.test(t)){
       setAwake(true);
@@ -1239,21 +1355,19 @@
   /* ══ 聽 ════════════════════════════════════════════════════ */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, recPaused = false, lastFinal = "", lastFinalAt = 0;
-  let interimTimer = null, lastInterim = "";
+  let interimTimer = null;
 
   /**
-   * ⚠ continuous 模式下，「講完了」這件事完全由 Google 伺服器決定，客戶端沒有上限。
+   * ⚠ 這裡曾經有一段「即時辨識文字停止變動 1.1 秒就當作講完」的搶快邏輯，已經拿掉。
    *
-   * Chromium 的 speech_recognizer_impl.cc 裡，continuous=false 的靜默門檻是 0.5 秒
-   * （長句 1 秒），而 continuous=true 直接放寬到 15 秒，並且忽略伺服器送回來的
-   * END_OF_UTTERANCE 事件。我們需要 continuous 才能一直聽著喚醒詞，所以拿不掉；
-   * 折衷是：**喚醒之後**自己判斷 —— 即時辨識的文字停止變動超過 1.1 秒就當作講完了。
+   * 動機是真的：continuous 模式下 Chromium 把靜默門檻從 0.5 秒放寬到 15 秒，還會忽略
+   * 伺服器的 END_OF_UTTERANCE，所以「講完了」的判定沒有上限。但那段程式有三個毛病：
+   * 中文句中的思考停頓會被當成講完而送出半句；送出之後真正的 isFinal 帶著整句再來一次，
+   * 指令會被執行兩遍（說一次「長大」跳兩格）；而且它省下多少時間從來沒有量到過。
    *
-   * 只在 awake 時啟用，喚醒詞那條路不受影響。1.1 秒比 Chrome 非連續模式的
-   * 0.5～1.0 秒保守一點，留一些給中文說話時的思考停頓。
+   * 沒量到的收益，換三個會在課堂上當眾出錯的失敗模式，不划算。等有辦法實測再說。
    */
-  const INTERIM_SETTLE_MS = 1100;
-  function clearInterim(){ clearTimeout(interimTimer); interimTimer = null; lastInterim = ""; }
+  function clearInterim(){ clearTimeout(interimTimer); interimTimer = null; }
   function submitHeard(t){
     const f = t.trim();
     if (!f) return;
@@ -1274,7 +1388,8 @@
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++){
         const res = e.results[i], txt = res[0].transcript;
-        if (res.isFinal) submitHeard(txt);
+        // 暫停期間飄進來的結果一律丟掉 —— 那多半是它聽見自己講的話
+        if (res.isFinal){ if (!recPaused) submitHeard(txt); }
         else interim += txt;
       }
       if (interim){
@@ -1283,13 +1398,6 @@
         showBubble(interim, 2400, "你說");
         // 喚醒詞用即時結果就搶先反應，等 final 會慢半拍
         if (!awake && WAKE.test(interim.replace(/\s+/g,""))) setAwake(true);
-        // 醒著的時候自己判斷講完沒有，不要乾等伺服器
-        if (awake && !busy && interim.trim().length >= 2 && interim !== lastInterim){
-          lastInterim = interim;
-          clearTimeout(interimTimer);
-          interimTimer = setTimeout(() => { const t = lastInterim; clearInterim(); submitHeard(t); },
-                                    INTERIM_SETTLE_MS);
-        }
       }
     };
     r.onerror = e => {
@@ -1322,7 +1430,9 @@
     micOn = !micOn;
     if (micOn){
       if (!hasKey()) openKey();
-      lastFinal = ""; lastFinalAt = 0; clearInterim(); startRec();
+      // 一定要走 resumeRec()：只呼叫 startRec() 的話 recPaused 還卡在 true，
+      // 下一次 onend 又會被擋住 —— 看起來像修好了，講一句又聾掉，更難查。
+      lastFinal = ""; lastFinalAt = 0; clearInterim(); resumeRec();
       showBubble("在聽了。喊一聲「Hi, Lucas」。", 3800);
     } else {
       setAwake(false); clearInterim(); if (rec) try { rec.abort(); } catch(e){}

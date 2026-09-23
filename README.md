@@ -78,17 +78,41 @@
 
 | 用途 | 模型 |
 |---|---|
-| 對話 | `gemini-3.8-flash`（`thinkingLevel: low`，實測 1.5 秒回應；設 high 要 5.2 秒） |
-| 發聲 | `gemini-3.1-flash-tts-preview`，失敗退 `gemini-2.5-flash-preview-tts`，再失敗退瀏覽器內建語音 |
+| 對話 | `gemini-3.8-flash`，串流端點，`thinkingBudget: 0` |
+| 發聲 | `gemini-3.1-flash-tts-preview`，**串流端點**，失敗退 `gemini-2.5-flash-preview-tts`，再失敗退瀏覽器內建語音 |
 | 聽 | 瀏覽器的 Web Speech API（zh-TW，持續辨識） |
+| 播放 | Web Audio API 排程佇列（不是 `<audio>`，碎塊播不了） |
 | 畫面 | 原生 Canvas 2D，約 3,100 顆粒子 |
 
-幾個踩過的坑，寫在這裡免得下次再踩：
+### ⚠ 最大的一個坑：TTS 一定要用串流端點
+
+同一支模型、同一個嗓音、同一段風格提示，`:generateContent` 和 `:streamGenerateContent?alt=sse`
+合成出來的音訊**完全一樣**，差別只在什麼時候拿得到第一個 byte：
+
+| 端點 | 第一個音 |
+|---|---|
+| `:generateContent` | 一則 163 字的回答要等 **20.8 秒**，而且跟音訊長度成正比（`1.67 + 0.518 × 音訊秒數`） |
+| `:streamGenerateContent?alt=sse` | **1.0 秒**，跟文字長度幾乎無關 |
+
+改版前整條鏈是 23.08 秒，TTS 一個人佔掉九成。改完之後端到端實測 2.5 秒。
+串流回來的每一塊是 1920 bytes（0.04 秒 PCM），`<audio>` 播不了這種碎塊，
+要用 Web Audio 自己排：每塊轉 `AudioBuffer`，接在 `playHead` 上依序 `start()`。
+
+有了串流就**不要再切塊**。切塊是為了讓第一個音早點出來，串流本來就第一塊出聲；
+切了反而讓每塊語調各自從頭開始，接縫聽得出來。
+
+其他踩過的坑：
 
 - **TTS 回的是裸 PCM**（`audio/L16`、24 kHz、單聲道），瀏覽器不吃，要自己補 44 bytes 的 WAV 表頭。
 - **語速用講法指示控制，不要用 `playbackRate`。** 事後加速會把共振峰一起壓縮，聽起來就是快轉。
   實測同一句話：不給指示 7.84 秒，「語速比平常快很多，中間幾乎不停頓」5.32 秒，「很慢很疲倦」12.96 秒。
-- **短的回答一次合成完**，不要切塊。每塊的語調會各自從頭開始，接縫在耳朵裡聽得出來。
+- **用 `thinkingBudget: 0`，不要用 `thinkingLevel: "low"`。** 實測 21 次 low 有 2 次仍然吐出思考 token；
+  而「完全不帶 `thinkingConfig`」那條退路更糟 —— 5 次全部 `MAX_TOKENS`，其中一次把英文思考內容
+  當答案吐出來，那會被原樣唸出聲。
+- **打斷的關鍵字要整句比對。** 把「停」直接放進 `|` 串裡，「為什麼心臟會停」也會被當成打斷指令。
+- **`continuous = true` 讓「講完了」的判定沒有上限。** Chromium 的 `speech_recognizer_impl.cc` 裡，
+  非連續模式的靜默門檻是 0.5～1 秒，連續模式放寬到 15 秒，還會忽略伺服器的 `END_OF_UTTERANCE`。
+  喚醒詞需要連續模式，拿不掉，所以折衷：喚醒之後自己判斷，即時辨識文字停止變動 1.1 秒就當講完。
 - **注音選字的 Enter 要擋掉**（`e.isComposing`），否則用中文輸入法的人每選一次字就送出半截句子。
 - **退到瀏覽器語音時要等它講完再開麥克風**，否則它會聽見自己，然後自問自答。
 - **語音辨識只在 Chrome 和 Edge 穩定**，Safari 和 Firefox 支援很差。這是瀏覽器的限制。

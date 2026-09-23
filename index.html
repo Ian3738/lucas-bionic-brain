@@ -803,7 +803,8 @@
 
   /* ── 對白泡 ──────────────────────────────────────────────── */
   let bubbleT = null;
-  function showBubble(text, ms){
+  function showBubble(text, ms, who){
+    bubble.dataset.who = who || "LUCAS";
     bubble.textContent = text;
     bubble.classList.add("show");
     clearTimeout(bubbleT);
@@ -818,16 +819,11 @@
     for (let i=0;i<bin.length;i++) a[i] = bin.charCodeAt(i);
     return a;
   }
-  function pcmToWav(pcm, rate){
-    const n = pcm.length, buf = new ArrayBuffer(44+n), v = new DataView(buf);
-    const str = (o,s) => { for (let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
-    str(0,"RIFF");  v.setUint32(4, 36+n, true);  str(8,"WAVE");  str(12,"fmt ");
-    v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
-    v.setUint32(24,rate,true); v.setUint32(28,rate*2,true);
-    v.setUint16(32,2,true); v.setUint16(34,16,true);
-    str(36,"data"); v.setUint32(40,n,true);
-    new Uint8Array(buf,44).set(pcm);
-    return URL.createObjectURL(new Blob([buf], { type:"audio/wav" }));
+  function concatBytes(list){
+    let n = 0; for (const b of list) n += b.length;
+    const out = new Uint8Array(n); let o = 0;
+    for (const b of list){ out.set(b, o); o += b.length; }
+    return out;
   }
 
   /** 星號、井號、表情符號、（括號註解）被唸出來都很怪。提示詞已經擋過一次，這裡再擋一次。 */
@@ -842,67 +838,147 @@
             .trim();
   }
 
+  /* ══ 播放：Web Audio 排程佇列 ═════════════════════════════
+     串流回來的每一塊是 1920 bytes（0.04 秒、24kHz、16-bit 單聲道 PCM）。
+     用 <audio> 播不了這種碎塊，所以自己排：每塊轉成 AudioBuffer，
+     接在 playHead 上依序 start()，聽起來是連續的一段話。          */
+  let actx = null, playHead = 0, nodes = [], curReader = null, curAbort = null;
+  function audioCtx(){
+    if (!actx){
+      const AC = window.AudioContext || window.webkitAudioContext;
+      actx = new AC({ sampleRate: 24000 });   // 對齊 Gemini 的輸出取樣率，省掉重新取樣
+    }
+    return actx;
+  }
+  // 瀏覽器要有使用者手勢才准出聲，第一次點畫面時解鎖
+  document.addEventListener("pointerdown", () => {
+    const c = audioCtx(); if (c.state === "suspended") c.resume().catch(()=>{});
+  }, { once:true });
+
+  function enqueuePCM(bytes, rate, gen){
+    if (gen !== speakGen) return;
+    const ctx = audioCtx();
+    const n = bytes.length >> 1;
+    if (!n) return;
+    const ab = ctx.createBuffer(1, n, rate);
+    const ch = ab.getChannelData(0);
+    for (let i=0, o=0; i<n; i++, o+=2){
+      const v = bytes[o] | (bytes[o+1] << 8);
+      ch[i] = (v >= 32768 ? v - 65536 : v) / 32768;
+    }
+    const now = ctx.currentTime;
+    /* 起跑前留 0.12 秒緩衝。若網路斷拍讓排程落到現在之後，就從現在接上去 ——
+       寧可有一個小接縫，也不要把後面所有塊都往前擠成雜音。 */
+    if (playHead < now + 0.12) playHead = now + 0.12;
+    const src = ctx.createBufferSource();
+    src.buffer = ab; src.connect(ctx.destination);
+    src.start(playHead);
+    playHead += ab.duration;
+    nodes.push(src);
+    src.onended = () => { const i = nodes.indexOf(src); if (i >= 0) nodes.splice(i, 1); };
+  }
+  function stopNodes(){
+    for (const s of nodes){ try { s.stop(); } catch(e){} }
+    nodes = []; playHead = 0;
+    if (curReader){ try { curReader.cancel(); } catch(e){} curReader = null; }
+    if (curAbort){ try { curAbort.abort(); } catch(e){} curAbort = null; }
+  }
+  /** 等排程裡的音訊真的播完，再把麥克風接回去 */
+  function waitTail(){
+    const ms = Math.max(0, (playHead - audioCtx().currentTime) * 1000) + 140;
+    return new Promise(res => setTimeout(res, ms));
+  }
+
+  /* ══ 合成：串流端點 ═══════════════════════════════════════
+     ⚠ 一定要用 :streamGenerateContent?alt=sse，不要用 :generateContent。
+       同一支模型、同一個嗓音、同一段風格提示，兩者合成出來的音訊一模一樣，
+       差別只在什麼時候拿得到第一個 byte：
+         :generateContent        整段合成完才吐 → 實測 163 字的回答要等 20.8 秒，
+                                 而且等待時間跟音訊長度成正比（1.67 + 0.518×秒數）
+         :streamGenerateContent  邊合成邊吐     → 第一塊 1.0 秒，跟文字長度幾乎無關
+       這是整頁最大的一筆延遲，佔改版前 23 秒總等待的九成。                */
   const ttsCache = new Map();
-  async function ttsFetch(text, P){
+  async function streamSpeak(text, P, gen){
     const ck = P.voice + "|" + P.style + "|" + text;
-    if (ttsCache.has(ck)) return ttsCache.get(ck);
+    const ctx = audioCtx();
+    if (ctx.state === "suspended"){ try { await ctx.resume(); } catch(e){} }
+    playHead = 0;
+
+    const hit = ttsCache.get(ck);
+    if (hit){ enqueuePCM(hit, 24000, gen); return waitTail(); }
+
+    const body = JSON.stringify({
+      contents:[{ parts:[{ text: P.style + "：" + text }] }],
+      generationConfig:{
+        responseModalities:["AUDIO"],
+        speechConfig:{ voiceConfig:{ prebuiltVoiceConfig:{ voiceName: P.voice } } }
+      }
+    });
+
     let lastErr = null;
     for (const model of TTS_MODELS){
+      const chunks = []; let got = 0;
       try {
-        const r = await fetch(API + model + ":generateContent?key=" + encodeURIComponent(API_KEY), {
-          method:"POST", headers:{ "Content-Type":"application/json" },
-          body: JSON.stringify({
-            contents:[{ parts:[{ text: P.style + "：" + text }] }],
-            generationConfig:{
-              responseModalities:["AUDIO"],
-              speechConfig:{ voiceConfig:{ prebuiltVoiceConfig:{ voiceName: P.voice } } }
+        const ctl = new AbortController(); curAbort = ctl;
+        const r = await fetch(
+          API + model + ":streamGenerateContent?alt=sse&key=" + encodeURIComponent(API_KEY),
+          { method:"POST", headers:{ "Content-Type":"application/json" }, body, signal: ctl.signal });
+        if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
+
+        const reader = r.body.getReader(); curReader = reader;
+        const dec = new TextDecoder(); let buf = "";
+        for (;;){
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (gen !== speakGen){ try { reader.cancel(); } catch(e){} return; }
+          buf += dec.decode(value, { stream:true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0){
+            const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+            if (!line.startsWith("data:")) continue;
+            const pl = line.slice(5).trim();
+            if (!pl) continue;
+            let j; try { j = JSON.parse(pl); } catch(e){ continue; }
+            for (const part of (j?.candidates?.[0]?.content?.parts || [])){
+              const d = part.inlineData;
+              if (!d?.data) continue;
+              const rate = parseInt((d.mimeType.match(/rate=(\d+)/) || [])[1] || "24000", 10);
+              const bytes = b64ToBytes(d.data);
+              chunks.push(bytes);
+              enqueuePCM(bytes, rate, gen);
+              got++;
             }
-          })
-        });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const j = await r.json();
-        const d = j?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-        if (!d?.data) throw new Error("沒有音訊");
-        const rate = parseInt((d.mimeType.match(/rate=(\d+)/)||[])[1] || "24000", 10);
-        const url = pcmToWav(b64ToBytes(d.data), rate);
-        ttsCache.set(ck, url);
-        return url;
-      } catch(e){ lastErr = e; }
+          }
+        }
+        curReader = null; curAbort = null;
+        if (!got) throw new Error("沒有音訊");
+        // 只快取短句（喚醒回應那種），長段落擺著佔記憶體不划算
+        if (text.length <= 24) ttsCache.set(ck, concatBytes(chunks));
+        return waitTail();
+      } catch(e){
+        curReader = null; curAbort = null;
+        if (gen !== speakGen) return;
+        // 已經播出去的不能重來，否則換模型重試會把同一句話唸兩次
+        if (got > 0) return waitTail();
+        lastErr = e;
+      }
     }
     throw lastErr || new Error("TTS 全掛");
   }
 
-  /* 瀏覽器內建語音 —— Gemini 掛掉時的最後一道。音色差，但不會沒聲音。 */
-  let localVoice = null;
-  function pickLocalVoice(){
-    const vs = speechSynthesis.getVoices();
-    localVoice = vs.find(v => /zh[-_]TW/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null;
-  }
-  if (window.speechSynthesis){ speechSynthesis.onvoiceschanged = pickLocalVoice; pickLocalVoice(); }
-  function localSpeak(text, P){
-    if (!window.speechSynthesis) return Promise.resolve();
-    return new Promise(res => {
-      const u = new SpeechSynthesisUtterance(text);
-      if (localVoice) u.voice = localVoice;
-      u.lang = "zh-TW"; u.rate = P.rate * 0.9; u.pitch = P.rate > 1.1 ? 1.25 : 1.0;
-      // 講完才把麥克風接回去，否則它會聽見自己講的話，當成使用者又問了一次
-      u.onend = u.onerror = res;
-      speechSynthesis.speak(u);
-    });
-  }
-
-  let audio = null, speakGen = 0;
+  let speakGen = 0;
   function stopSpeak(){
     speakGen++;
-    if (audio){ audio.pause(); audio = null; }
+    stopNodes();
     if (window.speechSynthesis) speechSynthesis.cancel();
     window.BRAIN.setSpeaking(false);
     resumeRec();
   }
 
   /**
-   * 切句照島語那套：第一塊短一點好快點上聲，其餘合成大塊省額度。
-   * 全部並行下載、依序播放。
+   * 一段話＝一次合成，不切塊。
+   * 串流之後沒有理由再切 —— 切塊是為了讓第一個音早點出來，而串流本來就
+   * 第一塊就出聲；切了反而讓每塊的語調各自從頭開始，接縫聽得出來。
    */
   async function say(text, quiet){
     const P = PERSONA[window.BRAIN.index];
@@ -910,42 +986,15 @@
     if (!hasKey()){ if (!quiet) await localSpeak(text, P); return; }
 
     const gen = ++speakGen;
-    if (audio){ audio.pause(); audio = null; }
+    stopNodes();
     if (window.speechSynthesis) speechSynthesis.cancel();
     pauseRec();
     window.BRAIN.setSpeaking(true);
 
-    /* 一段話能一次合成就一次合成 —— 分塊會讓每塊的語調各自從頭開始，
-       接縫在耳朵裡是聽得出來的。只有長到等不起時才切，而且切在句號上。 */
-    const clean = speakable(text);
-    let merged;
-    if (clean.length <= 140) merged = [clean];
-    else {
-      const sents = clean.split(/(?<=[。！？!?])/).map(x=>x.trim()).filter(Boolean);
-      merged = []; let buf = "";
-      for (const x of sents){
-        if (buf.length + x.length <= 120) buf += x;
-        else { if (buf) merged.push(buf); buf = x; }
-      }
-      if (buf) merged.push(buf);
-      if (!merged.length) merged = [clean];
-    }
-
-    const jobs = merged.map(c => ttsFetch(c, P).catch(() => null));
-    for (let i=0;i<jobs.length;i++){
-      if (gen !== speakGen) return;
-      const url = await jobs[i];
-      if (gen !== speakGen) return;
-      if (!url){
-        // 第一塊就失敗 → 整段改用內建語音，不要兩種音色混著播
-        if (i===0){ await localSpeak(text, P); break; }
-        continue;
-      }
-      await new Promise(res => {
-        audio = new Audio(url);
-        audio.onended = audio.onerror = res;
-        audio.play().catch(res);
-      });
+    try {
+      await streamSpeak(speakable(text), P, gen);
+    } catch(e){
+      if (gen === speakGen) await localSpeak(text, P);   // Gemini 掛了還是要有聲音
     }
     if (gen === speakGen){ window.BRAIN.setSpeaking(false); resumeRec(); }
   }
@@ -969,12 +1018,17 @@
 
   async function ask(userText, opts){
     opts = opts || {};
-    if (busy) return;
+    if (busy){
+      // 以前這裡直接 return，使用者看不出自己的話被丟掉了
+      cstat.textContent = "它還在講上一題。說「停」可以打斷它。";
+      showBubble("（它還在講上一題 —— 說「停」打斷它）", 3200, "LUCAS");
+      return;
+    }
     if (!hasKey()){ openKey(); return; }
     busy = true; lastAsk = userText;
 
     const i = window.BRAIN.index, S = window.BRAIN.STAGES[i], P = PERSONA[i];
-    let err = "";
+    let err = "", aiNode = null;
     if (opts.again) push("sys", "同一題，改用「" + S.name + "」再答一次");
     else push("me", userText);
     // 「再答一次」也要記進歷史，否則 user / model 的輪替會斷掉
@@ -982,6 +1036,8 @@
 
     setV("thinking");
     cstat.textContent = "「" + S.name + "」的腦在想……";
+    // 側邊面板預設是關的，回饋一定要放在畫布上，否則使用者看不到任何反應
+    showBubble("（「" + S.name + "」的腦在想……）", 30000, "LUCAS");
     // 訊號實際走哪條鏈由階段決定 —— 低階段就是會接錯，畫面上看得到
     window.BRAIN.runOwnPath();
 
@@ -990,15 +1046,21 @@
       if (P.local){
         await new Promise(r => setTimeout(r, 420));
         reply = babble();
+        push("ai", reply, S.name);
       } else {
-        reply = await callGemini(S, P);
+        aiNode = push("ai", "…", S.name);
+        reply = await callGemini(S, P, t => {
+          aiNode.textContent = t; cbody.scrollTop = cbody.scrollHeight;
+        });
+        aiNode.textContent = reply;
       }
-      push("ai", reply, S.name);
       remember("model", reply);
       await say(reply);
       showAgain();
     } catch(e){
       err = String(e.message||e);
+      // 串流中途掛掉時，把還沒填到字的空泡泡收掉，不要留一個「…」在那裡
+      if (aiNode && aiNode.textContent.trim() === "…") aiNode.remove();
       push("sys", "沒答出來：" + err);
       showBubble("（" + err + "）", 5200);
     } finally {
@@ -1008,39 +1070,71 @@
     }
   }
 
-  async function callGemini(S, P){
+  /**
+   * 對話也走串流，但目的不是省時間 —— 實測第一個 chunk 到整段走完只差 0.1～0.5 秒。
+   * 目的是讓字**邊來邊出現在畫面上**：使用者在 1.4 秒就看到它開始講話，
+   * 而不是盯著一顆點等到 3 秒後才一次跳出整段。感知上的差別比秒數大。
+   */
+  async function callGemini(S, P, onDelta){
     const sys = COMMON +
       "你現在處於「" + S.name + "（" + S.age + "）」這個階段。\n" + P.sys;
     const contents = history.slice();
 
-    const mk = withThinking => ({
+    /* ⚠ 用 thinkingBudget:0，不要用 thinkingLevel:"low"。
+       實測 21 次 low 有 2 次仍然吐出思考 token；而「完全不帶 thinkingConfig」那條舊退路更糟 ——
+       5 次全部 MAX_TOKENS，其中一次把英文思考內容當答案吐出來，那會被原樣唸出聲。 */
+    const mk = cfg => ({
       systemInstruction:{ parts:[{ text: sys }] },
       contents,
-      generationConfig: Object.assign(
-        { temperature:P.temp, maxOutputTokens:P.tok },
-        withThinking ? { thinkingConfig:{ thinkingLevel:"low" } } : {}
-      )
+      generationConfig: Object.assign({ temperature:P.temp, maxOutputTokens:P.tok }, cfg)
     });
+    const CFGS = [
+      { thinkingConfig:{ thinkingBudget:0 } },
+      { thinkingConfig:{ thinkingLevel:"low" } },   // 不收 budget 的模型才走這條
+    ];
 
-    let j = null;
-    for (const withThinking of [true, false]){
-      const r = await fetch(API + CHAT_MODEL + ":generateContent?key=" + encodeURIComponent(API_KEY), {
-        method:"POST", headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify(mk(withThinking))
-      });
-      j = await r.json().catch(() => null);
-      if (r.ok) break;
-      const msg = j?.error?.message || ("HTTP " + r.status);
-      // thinkingConfig 不被接受時退一步重試，其餘錯誤直接往上丟
-      if (withThinking && /thinking/i.test(msg)) continue;
-      if (r.status === 400 && /API key/i.test(msg)) throw new Error("金鑰被拒。點「API 金鑰」重貼一次。");
-      if (r.status === 429) throw new Error("額度用完了，等一下再試。");
-      throw new Error(msg.slice(0,120));
+    let lastErr = null;
+    for (const cfg of CFGS){
+      const r = await fetch(
+        API + CHAT_MODEL + ":streamGenerateContent?alt=sse&key=" + encodeURIComponent(API_KEY),
+        { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(mk(cfg)) });
+
+      if (!r.ok){
+        const j = await r.json().catch(() => null);
+        const msg = j?.error?.message || ("HTTP " + r.status);
+        if (/thinking/i.test(msg)){ lastErr = new Error(msg); continue; }
+        if (r.status === 400 && /API key/i.test(msg)) throw new Error("金鑰被拒。點「API 金鑰」重貼一次。");
+        if (r.status === 429) throw new Error("額度用完了，等一下再試。");
+        throw new Error(msg.slice(0,120));
+      }
+      if (!r.body) throw new Error("這個瀏覽器不支援串流讀取。");
+
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", text = "";
+      for (;;){
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream:true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0){
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const pl = line.slice(5).trim();
+          if (!pl) continue;
+          let j; try { j = JSON.parse(pl); } catch(e){ continue; }
+          for (const part of (j?.candidates?.[0]?.content?.parts || [])){
+            if (typeof part.text === "string" && part.text){
+              text += part.text;
+              if (onDelta) onDelta(text);
+            }
+          }
+        }
+      }
+      const out = text.trim();
+      if (out) return out;
+      lastErr = new Error("它沒講話（可能被長度或安全設定擋掉）。");
     }
-    const parts = j?.candidates?.[0]?.content?.parts || [];
-    const text = parts.map(p => p.text || "").join("").trim();
-    if (!text) throw new Error("它沒講話（可能被長度或安全設定擋掉）。");
-    return text;
+    throw lastErr || new Error("沒有回應");
   }
 
   /* 「用現在這個階段再答一次」—— 整頁最重要的一個按鈕。
@@ -1093,7 +1187,10 @@
 
   /** 先攔命令，攔不到才送去給模型。回傳 true 表示這句話已經處理掉了。 */
   function tryCommand(t){
-    if (/停止|安靜|閉嘴|不要講|別講|不要念|停下來/.test(t)){
+    /* 打斷。短促的「停」「夠了」要整句比對才收 —— 直接把「停」丟進上面那串的話，
+       「為什麼心臟會停」也會被當成打斷指令。 */
+    if (/停止|安靜|閉嘴|不要講|別講|不要念|不要唸|停下來|別念了|不要說了|先停/.test(t)
+        || /^(停|停停|噓|夠了|好了啦|等等|等一下)$/.test(t)){
       stopSpeak(); showBubble("好，我不講了。", 2600); return true;
     }
     if (/長大|大一點|下一個階段|再大/.test(t)){
@@ -1141,7 +1238,31 @@
 
   /* ══ 聽 ════════════════════════════════════════════════════ */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, recPaused = false, lastFinal = "";
+  let rec = null, recPaused = false, lastFinal = "", lastFinalAt = 0;
+  let interimTimer = null, lastInterim = "";
+
+  /**
+   * ⚠ continuous 模式下，「講完了」這件事完全由 Google 伺服器決定，客戶端沒有上限。
+   *
+   * Chromium 的 speech_recognizer_impl.cc 裡，continuous=false 的靜默門檻是 0.5 秒
+   * （長句 1 秒），而 continuous=true 直接放寬到 15 秒，並且忽略伺服器送回來的
+   * END_OF_UTTERANCE 事件。我們需要 continuous 才能一直聽著喚醒詞，所以拿不掉；
+   * 折衷是：**喚醒之後**自己判斷 —— 即時辨識的文字停止變動超過 1.1 秒就當作講完了。
+   *
+   * 只在 awake 時啟用，喚醒詞那條路不受影響。1.1 秒比 Chrome 非連續模式的
+   * 0.5～1.0 秒保守一點，留一些給中文說話時的思考停頓。
+   */
+  const INTERIM_SETTLE_MS = 1100;
+  function clearInterim(){ clearTimeout(interimTimer); interimTimer = null; lastInterim = ""; }
+  function submitHeard(t){
+    const f = t.trim();
+    if (!f) return;
+    // 同一句話隔一段時間再問一次要放行 —— 學生連問兩次一樣的問題是常有的事
+    if (f === lastFinal && Date.now() - lastFinalAt < 4000) return;
+    lastFinal = f; lastFinalAt = Date.now();
+    clearInterim();
+    heard(f);
+  }
 
   function buildRec(){
     if (!SR) return null;
@@ -1153,15 +1274,22 @@
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++){
         const res = e.results[i], txt = res[0].transcript;
-        if (res.isFinal){
-          const f = txt.trim();
-          if (f && f !== lastFinal){ lastFinal = f; heard(f); }
-        } else interim += txt;
+        if (res.isFinal) submitHeard(txt);
+        else interim += txt;
       }
       if (interim){
         cstat.textContent = "聽到：" + interim;
+        // 面板通常是關的，讓使用者在畫布上就看到自己講的話 —— 有回饋才不會覺得沒反應
+        showBubble(interim, 2400, "你說");
         // 喚醒詞用即時結果就搶先反應，等 final 會慢半拍
         if (!awake && WAKE.test(interim.replace(/\s+/g,""))) setAwake(true);
+        // 醒著的時候自己判斷講完沒有，不要乾等伺服器
+        if (awake && !busy && interim.trim().length >= 2 && interim !== lastInterim){
+          lastInterim = interim;
+          clearTimeout(interimTimer);
+          interimTimer = setTimeout(() => { const t = lastInterim; clearInterim(); submitHeard(t); },
+                                    INTERIM_SETTLE_MS);
+        }
       }
     };
     r.onerror = e => {
@@ -1176,7 +1304,7 @@
   }
   function startRec(){ if (!rec) rec = buildRec(); if (!rec) return false;
     try { rec.start(); } catch(e){} return true; }
-  function pauseRec(){ recPaused = true; if (rec) try { rec.stop(); } catch(e){} }
+  function pauseRec(){ recPaused = true; clearInterim(); if (rec) try { rec.stop(); } catch(e){} }
   function resumeRec(){ recPaused = false; if (micOn) startRec(); }
 
   function paintMic(){
@@ -1194,10 +1322,10 @@
     micOn = !micOn;
     if (micOn){
       if (!hasKey()) openKey();
-      lastFinal = ""; startRec();
+      lastFinal = ""; lastFinalAt = 0; clearInterim(); startRec();
       showBubble("在聽了。喊一聲「Hi, Lucas」。", 3800);
     } else {
-      setAwake(false); if (rec) try { rec.abort(); } catch(e){}
+      setAwake(false); clearInterim(); if (rec) try { rec.abort(); } catch(e){}
     }
     paintMic();
   }

@@ -216,6 +216,9 @@
       否則會變成「生日一過就換了顆腦」。<br>
       <b>訊號仍然會走到灰掉的腦區</b> —— 那是刻意的：它跑去問前額葉，而那裡還沒有東西。<br>
       <b>走過的連線會留下餘溫。</b>切到「原地繞圈」看那兩條線怎麼愈燒愈亮 —— 那是乒乓球退化，現在看得見了。<br>
+      <b>「這一場」預設是自動</b> —— 訊號走哪條鏈由成長階段決定，那是在<b>報告</b>它剛才真的做了什麼。
+      手動指定其中一條之後就固定住，對話不會再蓋掉你的選擇；但那時畫面會標上
+      <b>▲ 示範用</b>，並告訴你這個階段實際上走的是哪一條。<br>
       <b>三種訊號模式。</b>「單線」是一次走一條鏈，看得出它卡在哪裡；
       「賽跑」讓情緒與思考<b>同時出發</b> —— 杏仁核走一跳就到前額葉，海馬迴要先經過查核守衛才到，
       階段愈低情緒贏愈多，到專家才追得上；「全並行」則是成熟幾個腦區就有幾條線同時在跑。<br>
@@ -305,6 +308,9 @@
     done: ["pfc","amygdala","hippocampus","verifier","dmn","pfc"],
     loop: ["pfc","hippocampus","pfc","hippocampus","pfc","hippocampus"],
     dead: ["pfc","dmn","hippocampus"],
+  };
+  const PATHNAME = {
+    done: "整合輸出 done", loop: "原地繞圈 returnLimit", dead: "線接錯 deadEnd",
   };
   const STOPTXT = {
     done: "停止：<b>done</b> · 整合輸出",
@@ -725,9 +731,18 @@
       const path = PATHS[pathKey];
       const upto = sg ? Math.min(sg.i + 1, path.length - 1) : 0;
       const trail = path.slice(0, upto + 1).map(id => R[id].abbr).join(" › ");
+      /* ⚠ 手動指定時一定要標成示範。
+         自動 = 報告「這顆腦剛才對這一題做了什麼」；手動 = 演示「某條鏈長什麼樣子」。
+         兩者混在同一句話裡就會出現：專家階段答得有依據、有邊界、還會反問，
+         畫面卻說「交給鏈上沒有的角色」—— 學生會以為它答錯了。 */
+      const real = STAGES[stageIx].path;
+      const demo = (!pathAuto && real !== pathKey)
+        ? `<br><span style="color:#fbbf24">▲ 示範用</span>`
+          + `<span style="color:#94a3b8"> · 這個階段實際走的是「${PATHNAME[real]}」</span>`
+        : "";
       stepEl.innerHTML = (sg && sg.done)
-        ? `${trail}<br>${STOPTXT[pathKey]}${actLine}`
-        : `第 ${(sg?sg.i:0)+1} 步　<b>${R[path[upto]].zh}</b><br><span style="color:#94a3b8">${trail}</span>${actLine}`;
+        ? `${trail}<br>${STOPTXT[pathKey]}${demo}${actLine}`
+        : `第 ${(sg?sg.i:0)+1} 步　<b>${R[path[upto]].zh}</b><br><span style="color:#94a3b8">${trail}</span>${demo}${actLine}`;
     } else if (mode === "race"){
       const a = raceArrive(stageIx), gap = a.think - a.emo;
       const done = signals.filter(x => x.done).length;

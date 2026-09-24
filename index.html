@@ -216,7 +216,17 @@
       否則會變成「生日一過就換了顆腦」。<br>
       <b>訊號仍然會走到灰掉的腦區</b> —— 那是刻意的：它跑去問前額葉，而那裡還沒有東西。<br>
       <b>走過的連線會留下餘溫。</b>切到「原地繞圈」看那兩條線怎麼愈燒愈亮 —— 那是乒乓球退化，現在看得見了。<br>
-      <b>「這一場」預設是自動</b> —— 訊號走哪條鏈由成長階段決定，那是在<b>報告</b>它剛才真的做了什麼。
+      <b>回答是真的走完五個腦區產生的</b>，不是一次呼叫換個口氣：杏仁核給直覺、海馬迴撈事實、
+      預設模式網絡聯想（這三個同時跑），前額葉整合，最後查核守衛逐句比對。
+      <b>沒成熟的腦區就真的不跑</b> —— 幼兒階段的海馬迴最多只撈得出一條、而且可能記錯，
+      所以它講的話大部分沒有依據，這件事是量出來的。<br>
+      <b>接地率是這一題實測的</b>，不是設定值：查核守衛逐句比對海馬迴給的事實清單，
+      算出幾句站得住。還沒問過問題時顯示的才是設定值，畫面上會標明。<br>
+      <b>三條鏈也是流程跑完的結果。</b>撈不到任何事實 → deadEnd（連專家階段也會）；
+      有材料但沒有前額葉可以整合 → returnLimit；整合完並查核過 → done。<br>
+      <b>成熟的腦先查核再開口，未成熟的腦先講了再說。</b>所以專家階段要多等幾秒 ——
+      那幾秒不是卡住，是它在檢查自己。<br>
+      <b>「這一場」預設是自動</b> —— 由流程實際跑完的結果決定，那是在<b>報告</b>它剛才真的做了什麼。
       手動指定其中一條之後就固定住，對話不會再蓋掉你的選擇；但那時畫面會標上
       <b>▲ 示範用</b>，並告訴你這個階段實際上走的是哪一條。<br>
       <b>三種訊號模式。</b>「單線」是一次走一條鏈，看得出它卡在哪裡；
@@ -369,7 +379,7 @@
   const STAGES = [
     { name:"新生兒", age:"0–1 歲", sigma:0.200, alpha:0.24, lit:1, ground:0, path:"dead",
       desc:"皮質下先行 —— 杏仁核與腦幹在運作。它照樣會回答，但每一句都是自己補的。" },
-    { name:"幼兒", age:"1–3 歲", sigma:0.165, alpha:0.31, lit:2, ground:0.08, path:"dead",
+    { name:"幼兒", age:"1–3 歲", sigma:0.165, alpha:0.31, lit:2, ground:0.08, path:"loop",
       desc:"海馬迴上線，情節記憶開始。引得出零星幾句，大部分仍然靠想像。" },
     { name:"學齡前", age:"3–6 歲", sigma:0.135, alpha:0.39, lit:2, ground:0.18, path:"loop",
       desc:"語言與工作記憶的雛形。記得住的東西變多，但還串不成推理。" },
@@ -503,6 +513,11 @@
     speaking:  [["pfc",0.8], ["verifier",1]],            // 一邊講一邊查核自己
   };
   let activity = "idle";
+  /* 哪些腦區「此刻真的有一通呼叫在飛」。這一層跟 activity 疊加 ——
+     activity 說的是聽／想／講，working 說的是五個區各自跑到哪一步。 */
+  let working = new Set();
+  let stepNote = "";          // 流程正在做什麼，畫在左上角
+  let measured = null;        // 這一題實測的接地率 {ok, total}
 
   // ── 投影 ──────────────────────────────────────────────────
   let W=900, H=520, DPR=1, SC=1;
@@ -571,6 +586,7 @@
     // 活躍度平滑逼近，避免狀態一換就跳
     const want = {}; for (const id of IDS) want[id] = 0;
     for (const [id, v] of (ACTIVITY[activity] || [])) want[id] = v;
+    for (const id of working) want[id] = 1;      // 正在跑的那一區最亮
     const ek = 1 - Math.pow(0.05, dt);
     for (const id of IDS) excite[id] += (want[id] - excite[id]) * ek;
 
@@ -724,8 +740,9 @@
 
     // 左上角的步驟說明
     const ACT_TXT = { idle:"", listening:"在聽你講", thinking:"在想", speaking:"在講" };
-    const actLine = ACT_TXT[activity]
-      ? `<br><span style="color:#fbbf24">● 此刻：${ACT_TXT[activity]}</span>` : "";
+    const actLine = (stepNote
+        ? `<br><span style="color:#fbbf24">● ${stepNote}</span>`
+        : (ACT_TXT[activity] ? `<br><span style="color:#fbbf24">● 此刻：${ACT_TXT[activity]}</span>` : ""));
     if (mode === "chain"){
       const sg = signals[0];
       const path = PATHS[pathKey];
@@ -789,8 +806,12 @@
   function paintStage(){
     const S = STAGES[stageIx];
     nameEl.textContent = S.name;
+    const g = measured
+      ? `<b style="color:#4ade80">接地率 ${Math.round(measured.ok/Math.max(1,measured.total)*100)}%</b>`
+        + `<span style="opacity:.7">（這一題實測 ${measured.ok}/${measured.total} 句有依據）</span>`
+      : `接地率約 <b>${Math.round(S.ground*100)}%</b><span style="opacity:.7">（設定值，還沒實測）</span>`;
     descEl.innerHTML =
-      `${S.age}　·　接地率約 <b>${Math.round(S.ground*100)}%</b>　·　成熟 <b>${S.lit}</b> / 5 個腦區<br>${S.desc}`;
+      `${S.age}　·　${g}　·　成熟 <b>${S.lit}</b> / 5 個腦區<br>${S.desc}`;
     if (pathAuto && pathKey !== S.path){ pathKey = S.path; setPathUI(); if (mode === "chain") buildSignals(); }
     // 賽跑的速差與並行度都綁在階段上，換階段就要重組
     if (mode !== "chain") buildSignals();
@@ -868,6 +889,19 @@
      * 對應到哪些腦區亮見 ACTIVITY —— ⚠ 那是教學用的對應，不是解剖主張。
      */
     setActivity(k){ activity = k in ACTIVITY ? k : "idle"; },
+    /** 哪些腦區此刻真的有呼叫在飛 */
+    setWorking(ids){ working = new Set(ids || []); },
+    /** 左上角的流程說明；傳空字串就回到「此刻：在想／在講」 */
+    setStep(t){ stepNote = t || ""; },
+    /** 這一題實測的接地率。null 表示還沒測，畫面會標「設定值」 */
+    setMeasured(m){ measured = m; paintStage(); },
+    /** 流程實際走完之後，由結果決定畫哪一條鏈（只在「自動」時生效） */
+    setRealPath(key){
+      if (!pathAuto || !PATHS[key]) return;
+      pathKey = key; setPathUI(); replay();
+    },
+    /** 給流程用：MATURE_ORDER 的前 lit 個就是這一格成熟的腦區 */
+    maturedRegions(){ return MATURE_ORDER.slice(0, STAGES[stageIx].lit); },
   };
 })();
 </script>
@@ -1371,6 +1405,7 @@
     // 側邊面板預設是關的，回饋一定要放在畫布上，否則使用者看不到任何反應
     showBubble("（「" + S.name + "」的腦在想……）", 30000, "LUCAS");
     window.BRAIN.setActivity("thinking");
+    window.BRAIN.setMeasured(null);        // 上一題的實測數字不要留到這一題
     // 訊號實際走哪條鏈由階段決定 —— 低階段就是會接錯，畫面上看得到
     window.BRAIN.runOwnPath();
 
@@ -1382,7 +1417,7 @@
         push("ai", reply, S.name);
       } else {
         aiNode = push("ai", "…", S.name);
-        reply = await callGemini(S, P, t => {
+        reply = await runBrain(S, P, t => {
           aiNode.textContent = t; cbody.scrollTop = cbody.scrollHeight;
         });
         aiNode.textContent = reply;
@@ -1406,11 +1441,216 @@
       showBubble("（" + err + "）", 5200);
     } finally {
       busy = false; showStop(false);
+      window.BRAIN.setWorking([]); window.BRAIN.setStep("");
       window.BRAIN.setActivity("idle");   // say() 的 finally 已設過，這裡涵蓋「還沒開口就失敗」
       armAwake();                    // 答完了 → 三十秒從「現在」重新起算
       cstat.textContent = err || "";
       setV(micOn ? (awake ? "awake" : "listening") : "off");
     }
+  }
+
+  /* ══ 五個腦區的思考流程 ═══════════════════════════════════
+     回答不再是「一次呼叫 + 換個口氣」，而是真的走完五個腦區：
+
+       AMY 直覺 ─┐
+       HPC 事實 ─┼→ DLPFC 整合 → ACC 逐句查核 → 開口
+       PCC 聯想 ─┘
+
+     ⚠ 只有成熟的腦區會跑。沒成熟就真的不給材料 —— 幼兒階段根本不跑海馬迴，
+       所以它手上一個事實都沒有，只能自己編。接地率因此是**量出來的**，
+       不是寫死的常數；三條鏈也變成流程實際走完的結果，不是查表。
+
+     ⚠ 成熟的腦先查核再開口，未成熟的腦先講了再說 —— 所以 ACC 在 lit=5 時
+       擋在發聲前面（慢，但那個慢就是教學內容），其餘階段跟發聲並行、不佔時間。 */
+  /* 海馬迴撈得出多少東西，本身就隨成熟度變 —— 不能每個階段都給同一份提示，
+     否則幼兒撈出來的事實會跟專家一樣紮實，「沒成熟就沒材料」就變成空話。
+     索引對應八個成長階段；0 表示這一格根本撈不出東西。 */
+  const RECALL = [0, 1, 1, 2, 2, 3, 4, 5];
+  const RECALL_TONE = [
+    "", 
+    "你只是個兩三歲小孩的海馬迴，只記得非常表面、片段的印象，而且很可能記錯。",
+    "你只是個學齡前小孩的海馬迴，記得的東西零碎，常常把聽過的和想像的混在一起。",
+    "你是個小學生的海馬迴，記得課本上的說法，但只停在表面。",
+    "你是個國高中生的海馬迴，記得一些名詞和結論，但說不清楚背後的機制。",
+    "你是個大學生的海馬迴，記得的東西有條理，但還不夠深。",
+    "你是個成年人的海馬迴，記得的事情紮實。",
+    "你是個專家的海馬迴，記得的事情紮實而且知道邊界。",
+  ];
+
+  const REGION_JOB = {
+    amygdala: {
+      zh:"杏仁核", temp:1.2, tok:150,
+      sys:"你是一顆腦裡的杏仁核。對這個問題給出第一直覺反應，一句話就好。\n"+
+          "不要查證、不要推理，純粹是感覺 —— 怕、煩、興奮、無所謂，講出來。用臺灣口語繁體中文。" },
+    hippocampus: {
+      zh:"海馬迴", temp:0.4, tok:600,
+      sys:"你是一顆腦裡的海馬迴，負責把記得的東西撈出來。\n"+
+          "列出你確實知道、而且跟這個問題直接相關的事實，最多五條，每條一句話。\n"+
+          "⚠ 不確定的、只是聽起來合理的，一律不要寫。寧可少寫，也不要寫沒把握的。\n"+
+          "用臺灣繁體中文，不要用星號或標題，每條開頭用「・」。" },
+    dmn: {
+      zh:"預設模式網絡", temp:1.0, tok:400,
+      sys:"你是一顆腦裡的預設模式網絡，負責自由聯想。\n"+
+          "這個問題讓你聯想到什麼？給兩三個跨領域的連結，每個一句話。\n"+
+          "用臺灣繁體中文，不要用星號或標題。" },
+  };
+
+  /** 材料階段與查核用的簡單呼叫（不需要串流） */
+  async function callPlain(sys, user, opt){
+    opt = opt || {};
+    const ctl = new AbortController();
+    const gen = {
+      temperature: opt.temp ?? 0.7,
+      maxOutputTokens: opt.tok ?? 500,
+      thinkingConfig:{ thinkingBudget: 0 },
+    };
+    if (opt.json) gen.responseMimeType = "application/json";
+    const r = await fetch(API + CHAT_MODEL + ":generateContent?key=" + encodeURIComponent(API_KEY), {
+      method:"POST", headers:{ "Content-Type":"application/json" }, signal: ctl.signal,
+      body: JSON.stringify({
+        systemInstruction:{ parts:[{ text: sys }] },
+        contents:[{ role:"user", parts:[{ text: user }] }],
+        generationConfig: gen,
+      })
+    });
+    if (!r.ok){
+      const j = await r.json().catch(() => null);
+      throw new Error(j?.error?.message?.slice(0,90) || ("HTTP " + r.status));
+    }
+    const j = await r.json();
+    return (j?.candidates?.[0]?.content?.parts || []).map(x => x.text || "").join("").trim();
+  }
+
+  /** ACC：逐句比對海馬迴給的事實，回報哪幾句站得住，並改寫沒依據的句子 */
+  async function verify(facts, answer){
+    const out = await callPlain(
+      "你是一顆腦裡的知識查核守衛。逐句檢查下面的回答，每一句是否能對應到事實清單。\n" +
+      "只輸出 JSON：{\"sentences\":[{\"text\":\"原句\",\"grounded\":true或false}],\"revised\":\"改寫後的整段\"}\n" +
+      "grounded=true 表示這句話在事實清單裡找得到依據；false 表示是自己補的或超出清單範圍。\n" +
+      "revised 要保持原本的語氣，只把沒有依據的句子改成明確說出自己不確定，不要加新的內容。",
+      "【事實清單】\n" + (facts || "（空的 —— 沒有任何事實可以比對）") +
+      "\n\n【要檢查的回答】\n" + answer,
+      { temp:0.1, tok:1600, json:true });
+    const j = JSON.parse(out);
+    const ss = Array.isArray(j.sentences) ? j.sentences : [];
+    return {
+      ok: ss.filter(x => x.grounded).length,
+      total: ss.length,
+      revised: typeof j.revised === "string" ? j.revised.trim() : "",
+    };
+  }
+
+  /** 追問（「那睡眠呢」）如果不給前文，各腦區會不知道在講什麼 */
+  function ctxQuestion(){
+    const prev = history.slice(-4, -1)
+      .map(h => (h.role === "user" ? "使用者：" : "你剛才說：") + (h.parts?.[0]?.text || ""))
+      .join("\n");
+    return (prev ? "【前面聊過的】\n" + prev + "\n\n" : "") + "【現在的問題】" + lastAsk;
+  }
+
+  /**
+   * 跑完整條流程。回傳要唸出來的那段話。
+   * onDelta 只掛在「整合」那一步，讓字邊產生邊出現在面板上。
+   */
+  async function runBrain(S, P, onDelta){
+    const B = window.BRAIN;
+    const mature = new Set(B.maturedRegions());
+    const hasPFC = mature.has("pfc");
+    const ix = B.index;
+
+    // ── 材料階段：彼此不相依，同時發 ───────────────────────
+    const live = Object.keys(REGION_JOB).filter(id =>
+      mature.has(id) && !(id === "hippocampus" && RECALL[ix] === 0));
+    const matsP = live.length
+      ? Promise.all(live.map(id => {
+          const J = REGION_JOB[id];
+          let sys = J.sys;
+          if (id === "hippocampus"){
+            sys = RECALL_TONE[ix] + "\n" + sys +
+                  "\n⚠ 這個階段的你最多只能撈出 " + RECALL[ix] + " 條。撈不出來就回「（想不起來）」。";
+          }
+          return callPlain(sys, ctxQuestion(), { temp:J.temp, tok:J.tok }).catch(() => "");
+        })).then(got => { const m = {}; live.forEach((id,i) => m[id] = got[i]); return m; })
+      : Promise.resolve({});
+
+    /**
+     * ⚠ 要不要等材料，取決於有沒有前額葉。
+     *
+     * 沒有前額葉的階段就算等到了材料也串不起來，等於白等 —— 而且那違背這一格
+     * 要示範的事：不成熟的腦是**不假思索脫口而出**的，它本來就該比較快。
+     * 讓幼兒枯等四秒半的回憶再講出九個字，畫面上看起來像它在深思熟慮，正好相反。
+     *
+     * 所以：有前額葉才等材料（慢，但那個慢就是在整合）；沒有的話杏仁核直接接管，
+     * 材料照樣在背景跑完，只拿來算接地率 —— 也就是「你其實想得起來，但你沒有用」。
+     */
+    let mats = {};
+    if (hasPFC){
+      B.setWorking(live);
+      B.setStep(live.map(id => REGION_JOB[id].zh).join("、") + " 同時在跑");
+      mats = await matsP;
+    } else {
+      B.setWorking([live[0] || "amygdala"]);
+      B.setStep("還沒有前額葉可以整合 —— 杏仁核直接接管，不等回憶跑完就開口");
+    }
+
+    const usable = t => {
+      const x = (t || "").trim();
+      return (/^（?想不起來）?$/.test(x) || x.length < 4) ? "" : x;
+    };
+    const facts = usable(mats.hippocampus);
+
+    // ── 說出來 ──────────────────────────────────────────
+    B.setWorking([hasPFC ? "pfc" : (live[0] || "amygdala")]);
+    if (hasPFC) B.setStep("前額葉在整合");
+
+    let block = "";
+    if (mats.amygdala) block += "\n【你的直覺】" + mats.amygdala;
+    if (facts)         block += "\n【你記得的事實】\n" + facts;
+    if (mats.dmn)      block += "\n【你的聯想】" + mats.dmn;
+    let missing = "";
+    if (!mature.has("hippocampus") || RECALL[ix] === 0)
+      missing += "\n⚠ 你還沒有海馬迴可以提供事實 —— 你不記得任何相關的事。" +
+                 "所以你講的每一句都只能自己補，而你並不知道自己在補。";
+    else if (!hasPFC)
+      missing += "\n⚠ 你的海馬迴還在撈，但你等不及 —— 你會先把直覺講出來。" +
+                 "所以你講的東西沒有依據，而你不會意識到這件事。";
+    if (!hasPFC)
+      missing += "\n⚠ 你還沒有前額葉可以整合 —— 你串不起有條理的推理，想到哪講到哪。";
+    if (!mature.has("verifier"))
+      missing += "\n⚠ 你還沒有查核守衛 —— 你不會回頭檢查自己講的話站不站得住，所以講得很篤定。";
+
+    const answer = await callGemini(S, P, onDelta,
+      (block ? "\n\n你手上的材料：" + block : "") + missing +
+      (facts ? "\n\n⚠ 只有「你記得的事實」能當依據。直覺與聯想可以影響語氣和切入點，不能當成事實講。" : ""));
+
+    // ── 查核：不管哪一格都要等材料回來才比對得了 ──────────────
+    const sentCount = t => t.split(/(?<=[。！？!?])/).filter(x => x.trim()).length || 1;
+    const gradeP = matsP.then(m => {
+      const f = usable(m.hippocampus);
+      return f ? verify(f, answer) : { ok:0, total:sentCount(answer), revised:"" };
+    });
+
+    if (mature.has("verifier")){
+      // 成熟的腦先查核再開口 —— 這一段的等待是刻意的
+      B.setWorking(["verifier"]); B.setStep("查核守衛在逐句檢查");
+      try {
+        const g = await gradeP;
+        B.setMeasured({ ok:g.ok, total:g.total });
+        B.setWorking([]); B.setStep("");
+        B.setRealPath(facts ? "done" : "dead");
+        return g.revised || answer;
+      } catch(e){
+        B.setWorking([]); B.setStep("");
+        B.setRealPath(facts ? "done" : "dead");
+        return answer;
+      }
+    }
+
+    // 未成熟的腦先講了再說：查核跟發聲並行，講完才更新數字
+    gradeP.then(g => B.setMeasured({ ok:g.ok, total:g.total })).catch(() => {});
+    B.setWorking([]); B.setStep("");
+    B.setRealPath(live.includes("hippocampus") ? (hasPFC ? "done" : "loop") : "dead");
+    return answer;
   }
 
   /**
@@ -1419,9 +1659,9 @@
    * 而不是盯著一顆點等到 3 秒後才一次跳出整段。感知上的差別比秒數大。
    */
   let chatAbort = null;
-  async function callGemini(S, P, onDelta){
+  async function callGemini(S, P, onDelta, materials){
     const sys = COMMON +
-      "你現在處於「" + S.name + "（" + S.age + "）」這個階段。\n" + P.sys;
+      "你現在處於「" + S.name + "（" + S.age + "）」這個階段。\n" + P.sys + (materials || "");
     const contents = history.slice();
 
     /* ⚠ 用 thinkingBudget:0，不要用 thinkingLevel:"low"。
